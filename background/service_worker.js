@@ -102,12 +102,23 @@ function sendMessageToTab(tabId, message, timeout = 10000) {
   });
 }
 
+// Safe wrapper: never throws, always resolves to response or null
+async function safeSendMessageToTab(tabId, message, timeout = 10000) {
+  try {
+    return await sendMessageToTab(tabId, message, timeout);
+  } catch (e) {
+    console.warn('safeSendMessageToTab: message failed', e);
+    return null;
+  }
+}
+
 async function performSnapshots() {
   const { api_base, monitored } = await getStoredValues();
 
   if (!monitored || Object.keys(monitored).length === 0) {
     console.log('performSnapshots: no monitored clients configured');
-    setBadge('ERR');
+    // nothing monitored -> clear badge and no-op
+    setBadge('');
     return;
   }
 
@@ -119,6 +130,7 @@ async function performSnapshots() {
       return;
     }
     let anySuccess = false;
+    let foundMonitoredOpen = false;
     for (const tab of tabs) {
       try {
         // determine handle from URL path if possible
@@ -134,31 +146,36 @@ async function performSnapshots() {
         } catch (e) {
           // ignore URL parse errors
         }
-
         let profileData = null;
-        if (!handle) {
-          // fallback: ask content script for handle and counts
-            try {
-            profileData = await sendMessageToTab(tab.id, { type: 'COLLECT_PROFILE', include_engagement: true });
-            if (profileData && profileData.handle) handle = profileData.handle.toLowerCase();
-          } catch (e) {
-            console.warn('performSnapshots: failed to collect handle from tab', tab.id, e);
+
+        // If we have a handle from the URL and it's not monitored, skip messaging this tab.
+        if (handle) {
+          const monitoredEntryCheck = monitored[handle];
+          if (!monitoredEntryCheck) {
+            // skip unmonitored profile pages (avoid unnecessary messaging/injection)
             continue;
           }
+          // mark we have a monitored tab open
+          foundMonitoredOpen = true;
+          // attempt to collect profile data, but tolerate failures and still send a partial snapshot
+          profileData = await safeSendMessageToTab(tab.id, { type: 'COLLECT_PROFILE', include_engagement: true });
         } else {
-          // we still need counts from the content script
-          try {
-            profileData = await sendMessageToTab(tab.id, { type: 'COLLECT_PROFILE', include_engagement: true });
-          } catch (e) {
-            console.warn('performSnapshots: collect profile failed', e);
+          // No handle in URL: ask content script for handle and counts
+          profileData = await safeSendMessageToTab(tab.id, { type: 'COLLECT_PROFILE', include_engagement: true });
+          if (!profileData || !profileData.handle) {
+            // couldn't determine handle from page -> skip
             continue;
           }
+          handle = (profileData.handle || '').toLowerCase();
+          if (!monitored[handle]) {
+            // discovered handle is not in monitored set -> skip
+            continue;
+          }
+          foundMonitoredOpen = true;
         }
 
-        if (!handle) continue; // couldn't resolve handle
-
         const monitoredEntry = monitored[handle];
-        if (!monitoredEntry) continue; // not a monitored client
+        if (!monitoredEntry) continue; // double-check safety
 
         const payload = {
           client_id: monitoredEntry.client_id,
@@ -167,13 +184,19 @@ async function performSnapshots() {
             followers: (profileData && typeof profileData.followers === 'number') ? profileData.followers : null,
             following: (profileData && typeof profileData.following === 'number') ? profileData.following : null,
             posts: (profileData && typeof profileData.posts === 'number') ? profileData.posts : null,
-            bio: (profileData && profileData.bio) ? profileData.bio : '',
-            handle: profileData && profileData.handle ? profileData.handle : handle
+            bio: (profileData && typeof profileData.bio === 'string') ? profileData.bio : '',
+            handle: profileData && profileData.handle ? profileData.handle : handle,
+            name: (profileData && profileData.name) ? profileData.name : (monitoredEntry && monitoredEntry.name ? monitoredEntry.name : null),
+            profile_picture_url: (profileData && profileData.profile_picture_url) ? profileData.profile_picture_url : null,
+            // extras collected by the content script (best-effort)
+            external_link_present: !!(profileData && profileData.external_link_present),
+            verified_badge: !!(profileData && profileData.verified_badge),
+            is_private: !!(profileData && profileData.is_private)
           },
           timestamp: Date.now()
         };
 
-        // send to backend
+        // send to backend (partial payload allowed)
         try {
           console.log('performSnapshots: POST to', (api_base || DEFAULT_API_BASE) + '/api/events', 'payload', payload);
           const res = await fetch((api_base || DEFAULT_API_BASE) + '/api/events', {
@@ -186,7 +209,6 @@ async function performSnapshots() {
           console.log('performSnapshots: response', res && res.status, body);
           if (res && res.ok && body && body.success) {
             anySuccess = true;
-            setBadge('ON');
             // update monitored last_synced
             try {
               chrome.storage.local.get([STORAGE_MONITORED_KEY], (r) => {
@@ -200,19 +222,19 @@ async function performSnapshots() {
               // ignore
             }
           } else {
-            setBadge('ERR');
             console.warn('performSnapshots: backend returned error', res && res.status, body)
           }
         } catch (e) {
           console.error('performSnapshots: fetch exception', e);
-          setBadge('ERR');
         }
       } catch (e) {
         console.warn('performSnapshots: tab processing failed', e);
         continue;
       }
     }
-    if (!anySuccess) setBadge('ERR');
+    if (anySuccess) setBadge('ON');
+    else if (foundMonitoredOpen) setBadge('ERR');
+    else setBadge('');
   });
 }
 
@@ -248,7 +270,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     let profileData = null
     if (isIg) {
       try {
-        profileData = await sendMessageToTab(tab.id, { type: 'COLLECT_PROFILE', include_engagement: true })
+        profileData = await safeSendMessageToTab(tab.id, { type: 'COLLECT_PROFILE', include_engagement: true })
       } catch (e) {
         console.warn('action.onClicked: collect failed', e)
       }
@@ -319,7 +341,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const isIg = /https?:\/\/(www\.)?instagram\.com\//i.test(tab.url)
       let profileData = null
       if (isIg) {
-        try { profileData = await sendMessageToTab(tab.id, { type: 'COLLECT_PROFILE', include_engagement: true }) } catch (e) { console.warn('OPEN_LINK: collect failed', e) }
+        try { profileData = await safeSendMessageToTab(tab.id, { type: 'COLLECT_PROFILE', include_engagement: true }) } catch (e) { console.warn('OPEN_LINK: collect failed', e) }
       }
       const vals = await getStoredValues()
       const base = vals.api_base || DEFAULT_API_BASE

@@ -29,5 +29,8 @@ WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
 -- Create unique index scoped to user/platform/account
 CREATE UNIQUE INDEX IF NOT EXISTS clients_user_platform_account_id_idx ON clients (user_id, platform, account_id);
 
+-- Index to speed up lookup of snapshots per client ordered by newest
+CREATE INDEX IF NOT EXISTS events_client_created_idx ON events (client_id, created_at DESC);
+
 COMMIT;
 -- Note: run this in Supabase SQL editor or via psql as a DB admin.

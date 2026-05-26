@@ -1,22 +1,10 @@
 import { NextResponse } from 'next/server'
 import supabase from '../../../lib/supabase'
 import { updateRiskStatusForClient } from '../../../lib/updateRiskStatus'
-import { computeRiskScoreFromSnapshot } from '../../../lib/riskEngine'
-import { createClient } from '@supabase/supabase-js'
-
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? ''
-
-function makeAdminClient() {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return null
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-}
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-}
+import { computeRiskScoreFromSnapshot, computeDerivedMetricsFromHistory } from '../../../lib/riskEngine'
+import apiUtils from '../../../lib/apiUtils'
+import logger from '../../../lib/logger'
+import { allowRequest } from '../../../lib/rateLimiter'
 
 type Incoming = {
   client_id: string
@@ -52,14 +40,24 @@ export async function POST(req: Request) {
   try {
     body = await req.json()
   } catch (e) {
-    return NextResponse.json({ success: false, error: 'Invalid JSON' }, { status: 400 })
+    return NextResponse.json(apiUtils.errorPayload('Invalid JSON'), { status: 400, headers: apiUtils.CORS_HEADERS })
   }
-
-  if (!isValidIncoming(body)) {
-    return NextResponse.json({ success: false, error: 'Invalid payload' }, { status: 400 })
-  }
+  const v = apiUtils.validateProfileSnapshot(body)
+  if (!v.ok) return NextResponse.json(apiUtils.errorPayload(v.error), { status: 400, headers: apiUtils.CORS_HEADERS })
 
   const incoming: Incoming = body
+
+  // Simple per-client rate limiting to protect DB from accidental floods
+  try {
+    const key = `client:${incoming.client_id}`
+    if (!allowRequest(key, Number(process.env.PROFILE_SNAPSHOT_MAX_PER_MIN || 120), 60 * 1000)) {
+      logger.warn('rate limit exceeded for', key)
+      return NextResponse.json(apiUtils.errorPayload('rate limit exceeded'), { status: 429, headers: apiUtils.CORS_HEADERS })
+    }
+  } catch (e) {
+    // if rate limiter fails, continue (fail-open)
+    logger.warn('rate limiter error', e)
+  }
   const event = {
     client_id: incoming.client_id,
     type: 'PROFILE_SNAPSHOT',
@@ -69,15 +67,15 @@ export async function POST(req: Request) {
   }
 
   try {
-    // Use a service-role admin client server-side to bypass RLS for inserts.
-    const admin = makeAdminClient()
+    // Use a service-role admin client server-side to bypass RLS for inserts when available.
+    const admin = apiUtils.makeAdminClient()
     const db = admin ?? supabase
 
     // Ensure client exists and fetch its user_id
     const { data: clientRow, error: clientErr } = await db.from('clients').select('user_id').eq('id', event.client_id).maybeSingle()
     if (clientErr) {
-      console.warn('failed to lookup client for event', clientErr)
-      return NextResponse.json({ success: false, error: 'Client lookup failed' }, { status: 500, headers: CORS_HEADERS })
+      logger.warn('failed to lookup client for event', clientErr)
+      return NextResponse.json(apiUtils.errorPayload('Client lookup failed'), { status: 500, headers: apiUtils.CORS_HEADERS })
     }
     if (!clientRow) {
       return NextResponse.json({ success: false, error: 'Client not found' }, { status: 400, headers: CORS_HEADERS })
@@ -87,20 +85,20 @@ export async function POST(req: Request) {
     // (PGRST204 complaining about missing column), retry without user_id.
     let evData: any = null
     let evError: any = null
-    try {
-      const res = await db.from('events').insert({
-        client_id: event.client_id,
-        user_id: clientRow.user_id,
-        type: event.type,
-        metadata: event.metadata,
-        created_at: event.created_at,
-      }).select().single()
-      evData = res.data
-      evError = res.error
-    } catch (e) {
-      console.warn('events insert threw', e)
-      evError = e
-    }
+      try {
+        const res = await db.from('events').insert({
+          client_id: event.client_id,
+          user_id: clientRow.user_id,
+          type: event.type,
+          metadata: event.metadata,
+          created_at: event.created_at,
+        }).select().single()
+        evData = res.data
+        evError = res.error
+      } catch (e) {
+        logger.warn('events insert threw', e)
+        evError = e
+      }
 
     if (evError) {
       // If schema cache is missing 'user_id' column, retry without it (best-effort)
@@ -126,7 +124,7 @@ export async function POST(req: Request) {
     try {
       await db.from('clients').update({ last_checked: event.created_at }).eq('id', event.client_id)
     } catch (e) {
-      console.warn('failed to update clients.last_checked', e)
+      logger.warn('failed to update clients.last_checked', e)
     }
 
     if (!evData || evError) {
@@ -134,15 +132,42 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, error: 'Failed to insert event' }, { status: 500, headers: CORS_HEADERS })
     }
 
-    // Update risk status: compute derived features and numeric score (best-effort)
+    // Update risk status: compute derived features using historical snapshots and numeric score (best-effort)
     try {
-      // fetch previous snapshot for deltas
+      // fetch historical profile snapshots for this client (include newly inserted event)
+      let history: any[] = []
+      try {
+        const hres = await db.from('events').select('id, metadata, created_at').eq('client_id', event.client_id).eq('type', 'PROFILE_SNAPSHOT').order('created_at', { ascending: true }).limit(2000)
+        if (hres && hres.data) history = hres.data
+      } catch (e) {
+        // ignore history fetch errors
+        history = []
+      }
+
+      // compute derived metrics from history
+      let derived: any = null
+      try {
+        derived = computeDerivedMetricsFromHistory(history, evData)
+      } catch (e) { derived = null }
+
+      // merge derived into event metadata in DB (best-effort)
+      try {
+        const newMeta = Object.assign({}, evData.metadata || {}, { derived })
+        const up = await db.from('events').update({ metadata: newMeta }).eq('id', evData.id).select().single()
+        if (up && up.data) evData = up.data
+      } catch (e) {
+        logger.warn('failed to merge derived into event metadata', e)
+      }
+
+      // fetch previous snapshot for deltas (closest before current)
       let prevEvent: any = null
       try {
+        // look for latest event with created_at < current.created_at
         const prevRes = await db.from('events')
           .select('*')
           .eq('client_id', event.client_id)
           .neq('id', evData.id)
+          .lt('created_at', evData.created_at)
           .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle()
@@ -164,35 +189,44 @@ export async function POST(req: Request) {
       try {
         await db.from('risk_status').upsert({ client_id: event.client_id, status: scoreRes.level, score: scoreRes.score, notes: scoreRes.reason }, { onConflict: 'client_id' })
       } catch (e) {
-        console.warn('failed to upsert risk_status', e)
+        logger.warn('failed to upsert risk_status', e)
+      }
+
+      // Append to risk_history for auditing/trends (best-effort)
+      try {
+        await db.from('risk_history').insert({
+          client_id: event.client_id,
+          event_id: evData.id,
+          score: scoreRes.score,
+          level: scoreRes.level,
+          notes: scoreRes.reason,
+          payload: { derived, previous_event_id: prevEvent ? prevEvent.id : null }
+        })
+      } catch (e) {
+        logger.warn('failed to insert risk_history', e)
+      }
+
+      // Kick off a best-effort background recompute (do not block response)
+      try {
+        const adminCli = apiUtils.makeAdminClient()
+        updateRiskStatusForClient(event.client_id, adminCli ?? undefined).catch((err) => logger.warn('updateRiskStatusForClient failed', err))
+      } catch (e) {
+        logger.warn('scheduling updateRiskStatusForClient failed', e)
       }
 
       // Return inserted event and derived risk summary
-      return NextResponse.json({ success: true, event: evData, risk: { score: scoreRes.score, level: scoreRes.level, reason: scoreRes.reason } }, { status: 201, headers: CORS_HEADERS })
+      return NextResponse.json(apiUtils.okPayload({ event: evData, derived, risk: { score: scoreRes.score, level: scoreRes.level, reason: scoreRes.reason } }), { status: 201, headers: apiUtils.CORS_HEADERS })
     } catch (e) {
       console.warn('risk scoring failed', e)
       return NextResponse.json({ success: true, event: evData }, { status: 201, headers: CORS_HEADERS })
     }
   } catch (e) {
-    // eslint-disable-next-line no-console
-    console.error('insert exception', e)
-    return NextResponse.json({ success: false, error: 'DB error' }, { status: 500, headers: CORS_HEADERS })
+    logger.error('insert exception', e)
+    return NextResponse.json(apiUtils.errorPayload('DB error'), { status: 500, headers: apiUtils.CORS_HEADERS })
   }
-
-  // Trigger risk recompute (best-effort) using admin client if available
-  try {
-    const admin = makeAdminClient()
-    if (admin) await updateRiskStatusForClient(event.client_id, admin)
-    else await updateRiskStatusForClient(event.client_id)
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn('updateRiskStatusForClient failed', e)
-  }
-
-  return NextResponse.json({ success: true }, { headers: CORS_HEADERS })
 }
 
 // respond to preflight CORS requests
 export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: CORS_HEADERS })
+  return new NextResponse(null, { status: 204, headers: apiUtils.CORS_HEADERS })
 }

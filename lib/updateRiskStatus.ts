@@ -50,6 +50,21 @@ export async function updateRiskStatusForClient(clientId: string, db?: SupabaseC
 
   const upsertRes = await upsertRiskStatus(clientId, level, score, db)
   if (upsertRes.error) return { error: upsertRes.error }
+  // best-effort: append to risk_history for audit/trends
+  try {
+    const cli = db ?? supabase
+    await cli.from('risk_history').insert({
+      client_id: clientId,
+      event_id: null,
+      score,
+      level,
+      notes: null,
+      payload: { alerts_count: alerts.length }
+    })
+  } catch (e) {
+    // ignore
+  }
+
   return { data: upsertRes.data }
 }
 
