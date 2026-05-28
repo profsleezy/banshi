@@ -1,7 +1,5 @@
 "use client"
 
-import React from 'react'
-
 export type AlertRow = {
   id: string
   title: string
@@ -14,34 +12,40 @@ type Props = {
   alerts: AlertRow[]
 }
 
-export default function AlertFeed({ alerts }: Props) {
-  if (!alerts || alerts.length === 0) {
-    return (
-      <div className="p-4 bg-zinc-900 border border-zinc-800 rounded text-center text-zinc-400">No recent alerts</div>
-    )
-  }
+function formatDate(value?: string) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return date.toLocaleString()
+}
 
+export default function AlertFeed({ alerts }: Props) {
   return (
-    <div className="p-4 bg-zinc-900 border border-zinc-800 rounded">
-      <h3 className="text-lg font-medium mb-3">Recent Alerts</h3>
-      <div className="max-h-64 overflow-y-auto space-y-3">
-        {alerts.map(a => (
-          <div key={a.id} className="p-3 border border-zinc-800 rounded">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-medium">{a.title}</div>
-                <div className="text-xs text-zinc-400 mt-1">{a.message}</div>
-              </div>
-              <div className="text-right">
-                <div className={`px-2 py-1 rounded text-xs ${a.severity === 'critical' ? 'bg-red-800 text-red-200' : 'bg-amber-800 text-amber-200'}`}>
-                  {a.severity}
-                </div>
-                <div className="text-xs text-zinc-500 mt-2">{a.created_at ? new Date(a.created_at).toLocaleString() : '—'}</div>
-              </div>
-            </div>
-          </div>
-        ))}
+    <section className="rounded border border-zinc-800 bg-zinc-900">
+      <div className="border-b border-zinc-800 px-4 py-3">
+        <h3 className="text-sm font-medium text-zinc-100">Recent Alerts</h3>
       </div>
-    </div>
+
+      {!alerts || alerts.length === 0 ? (
+        <div className="px-4 py-8 text-center text-sm text-zinc-500">No recent alerts</div>
+      ) : (
+        <div className="max-h-[360px] overflow-y-auto">
+          {alerts.map((alert) => (
+            <div key={alert.id} className="border-b border-zinc-800/70 px-4 py-3 last:border-0">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-zinc-100">{alert.title}</div>
+                  <div className="mt-1 max-h-10 overflow-hidden text-xs leading-5 text-zinc-500">{alert.message}</div>
+                </div>
+                <span className={`shrink-0 rounded border px-2 py-1 text-xs font-medium ${alert.severity === 'critical' ? 'border-red-500/40 bg-red-500/10 text-red-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-100'}`}>
+                  {alert.severity}
+                </span>
+              </div>
+              <div className="mt-2 text-xs text-zinc-600">{formatDate(alert.created_at)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   )
 }

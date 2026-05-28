@@ -71,14 +71,28 @@ export async function POST(req: Request) {
     const admin = apiUtils.makeAdminClient()
     const db = admin ?? supabase
 
-    // Ensure client exists and fetch its user_id
-    const { data: clientRow, error: clientErr } = await db.from('clients').select('user_id').eq('id', event.client_id).maybeSingle()
+    // Ensure client exists and respect dashboard/extension monitoring state.
+    let clientRow: any = null
+    let clientErr: any = null
+    const clientRes = await db.from('clients').select('user_id, monitoring_enabled').eq('id', event.client_id).maybeSingle()
+    clientRow = clientRes.data
+    clientErr = clientRes.error
+
+    if (clientErr && String(clientErr.message || '').includes('monitoring_enabled')) {
+      const fallbackRes = await db.from('clients').select('user_id').eq('id', event.client_id).maybeSingle()
+      clientRow = fallbackRes.data
+      clientErr = fallbackRes.error
+    }
+
     if (clientErr) {
       logger.warn('failed to lookup client for event', clientErr)
       return NextResponse.json(apiUtils.errorPayload('Client lookup failed'), { status: 500, headers: apiUtils.CORS_HEADERS })
     }
     if (!clientRow) {
-      return NextResponse.json({ success: false, error: 'Client not found' }, { status: 400, headers: CORS_HEADERS })
+      return NextResponse.json(apiUtils.errorPayload('Client not found'), { status: 400, headers: apiUtils.CORS_HEADERS })
+    }
+    if (clientRow.monitoring_enabled === false) {
+      return NextResponse.json(apiUtils.okPayload({ skipped: true, reason: 'monitoring_disabled' }), { status: 200, headers: apiUtils.CORS_HEADERS })
     }
 
     // Try inserting the event including user_id. If the DB schema hasn't been migrated
@@ -129,7 +143,7 @@ export async function POST(req: Request) {
 
     if (!evData || evError) {
       console.warn('failed to insert event', evError)
-      return NextResponse.json({ success: false, error: 'Failed to insert event' }, { status: 500, headers: CORS_HEADERS })
+      return NextResponse.json(apiUtils.errorPayload('Failed to insert event'), { status: 500, headers: apiUtils.CORS_HEADERS })
     }
 
     // Update risk status: compute derived features using historical snapshots and numeric score (best-effort)
@@ -157,6 +171,27 @@ export async function POST(req: Request) {
         if (up && up.data) evData = up.data
       } catch (e) {
         logger.warn('failed to merge derived into event metadata', e)
+      }
+
+      try {
+        const clientUpdate = await db
+          .from('clients')
+          .update({
+            last_checked: evData.created_at ?? event.created_at,
+            latest_snapshot_metadata: evData.metadata ?? event.metadata,
+          })
+          .eq('id', event.client_id)
+
+        if (clientUpdate.error) {
+          const missingLatestMeta = String(clientUpdate.error.message || '').includes('latest_snapshot_metadata')
+          if (missingLatestMeta) {
+            await db.from('clients').update({ last_checked: evData.created_at ?? event.created_at }).eq('id', event.client_id)
+          } else {
+            logger.warn('failed to update latest client snapshot metadata', clientUpdate.error)
+          }
+        }
+      } catch (e) {
+        logger.warn('failed to update latest client snapshot metadata', e)
       }
 
       // fetch previous snapshot for deltas (closest before current)
@@ -218,7 +253,7 @@ export async function POST(req: Request) {
       return NextResponse.json(apiUtils.okPayload({ event: evData, derived, risk: { score: scoreRes.score, level: scoreRes.level, reason: scoreRes.reason } }), { status: 201, headers: apiUtils.CORS_HEADERS })
     } catch (e) {
       console.warn('risk scoring failed', e)
-      return NextResponse.json({ success: true, event: evData }, { status: 201, headers: CORS_HEADERS })
+      return NextResponse.json({ success: true, event: evData }, { status: 201, headers: apiUtils.CORS_HEADERS })
     }
   } catch (e) {
     logger.error('insert exception', e)

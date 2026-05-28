@@ -1,7 +1,7 @@
 import supabase from './supabase'
 import type { Client as DBClient } from '../types/client'
 
-type Result<T> = { data?: T; error?: Error }
+export type Result<T> = { data?: T; error?: Error }
 type CreateResult<T> = Result<T> & { existed?: boolean }
 
 export type NewClientPayload = {
@@ -91,4 +91,62 @@ export async function deleteClient(id: string): Promise<Result<DBClient>> {
 
   if (error) return { error }
   return { data: data as DBClient }
+}
+
+export async function deleteClientAndRelated(id: string): Promise<Result<{ deleted: boolean; client_id: string }>> {
+  const { data, error: sessionError } = await supabase.auth.getSession()
+  if (sessionError) return { error: sessionError }
+
+  const token = data.session?.access_token
+  if (!token) return { error: new Error('Not authenticated') }
+
+  const res = await fetch(`/api/clients/${id}`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+
+  let body: any = null
+  try {
+    body = await res.json()
+  } catch (e) {
+    body = null
+  }
+
+  if (!res.ok || !body?.success) {
+    return { error: new Error(body?.error || 'Failed to delete client') }
+  }
+
+  return { data: { deleted: true, client_id: id } }
+}
+
+export async function setClientMonitoring(id: string, enabled: boolean): Promise<Result<DBClient>> {
+  const { data, error: sessionError } = await supabase.auth.getSession()
+  if (sessionError) return { error: sessionError }
+
+  const token = data.session?.access_token
+  if (!token) return { error: new Error('Not authenticated') }
+
+  const res = await fetch(`/api/clients/${id}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ monitoring_enabled: enabled }),
+  })
+
+  let body: any = null
+  try {
+    body = await res.json()
+  } catch (e) {
+    body = null
+  }
+
+  if (!res.ok || !body?.success) {
+    return { error: new Error(body?.error || 'Failed to update monitoring state') }
+  }
+
+  return { data: body.client as DBClient }
 }

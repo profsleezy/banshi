@@ -11,6 +11,9 @@ export interface Client {
   account_id: string;
   notes?: string | null;
   metadata?: Record<string, unknown> | null;
+  latest_snapshot_metadata?: Record<string, unknown> | null;
+  monitoring_enabled?: boolean | null;
+  monitoring_updated_at?: Timestamp | null;
   created_at: Timestamp;
   updated_at: Timestamp;
   last_checked?: Timestamp | null;

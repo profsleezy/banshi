@@ -59,14 +59,56 @@
     return null;
   }
 
+  const PROFILE_PATH_BLACKLIST = ['p', 'explore', 'stories', 'direct', 'accounts', 'a', 'reel', 'reels', 'tag', 'tv', 'about', 'developer', 'graphql'];
+
+  function getProfileHandleFromUrl() {
+    try {
+      const parts = location.pathname.split('/').filter(Boolean);
+      if (!parts.length) return '';
+      const first = parts[0].toLowerCase();
+      if (PROFILE_PATH_BLACKLIST.includes(first)) return '';
+      return first.replace(/^@/, '');
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function normalizeHandle(value) {
+    return String(value || '').trim().replace(/^@/, '').toLowerCase();
+  }
+
+  function cleanDisplayName(value, handle) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text) return null;
+
+    const nameKey = normalizeHandle(text);
+    const handleKey = normalizeHandle(handle);
+    if (!nameKey || nameKey === handleKey) return null;
+
+    const compactName = nameKey.replace(/[^a-z0-9]/g, '');
+    const compactHandle = handleKey.replace(/[^a-z0-9]/g, '');
+    const nameParts = nameKey.split(/[^a-z0-9]+/).filter((part) => part.length >= 3);
+    const handleParts = handleKey.split(/[^a-z0-9]+/).filter((part) => part.length >= 3);
+    const related =
+      compactHandle.includes(compactName) ||
+      compactName.includes(compactHandle) ||
+      nameParts.some((part) => compactHandle.includes(part)) ||
+      handleParts.some((part) => compactName.includes(part));
+
+    return related ? text : null;
+  }
+
   function extractHandle(metaDesc) {
+    const urlHandle = getProfileHandleFromUrl();
+    if (urlHandle) return urlHandle;
+
     try {
       const og = document.querySelector('meta[property="og:title"]') || document.querySelector('meta[name="title"]');
       if (og && og.content) {
         const t = og.content;
         const m = t.match(/\((@[^)]+)\)/);
         if (m) return m[1].replace(/^@/, '');
-        const first = t.split('•')[0].trim().split(' ')[0];
+        const first = t.split(/[\u2022\u00b7]/)[0].trim().split(' ')[0];
         if (first) return first.replace(/^@/, '');
       }
     } catch (e) {}
@@ -413,7 +455,7 @@
       let elapsed = 0;
       const check = () => {
         const d = collectProfile();
-        if ((d.handle && d.handle.length > 0) || (typeof d.followers === 'number' && d.followers > 0) || (typeof d.following === 'number' && d.following > 0) || (typeof d.posts === 'number' && d.posts > 0)) return resolve(d);
+        if ((typeof d.followers === 'number' && d.followers > 0) || (typeof d.following === 'number' && d.following > 0) || (typeof d.posts === 'number' && d.posts > 0)) return resolve(d);
         elapsed += interval;
         if (elapsed >= timeout) return resolve(d);
         setTimeout(check, interval);
@@ -487,7 +529,8 @@
   function collectProfile() {
     try {
       const metaDesc = parseMetaDescription();
-      const handle = (extractHandle(metaDesc) || '').replace(/^@/, '').toLowerCase();
+      const urlHandle = getProfileHandleFromUrl();
+      const handle = normalizeHandle(extractHandle(metaDesc) || urlHandle);
       const counts = extractCounts(metaDesc);
       // extract display name and profile picture (try embedded JSON first)
       function extractNameAndPic() {
@@ -499,22 +542,22 @@
           const header = document.querySelector('header') || document.querySelector('main') || document;
           let name = null;
           let profile_picture_url = null;
-          if (user) {
-            if (user.full_name && user.full_name.trim()) name = user.full_name.trim();
+          if (user && normalizeHandle(user.username || '') === handle) {
+            if (user.full_name && user.full_name.trim()) name = cleanDisplayName(user.full_name, handle);
             profile_picture_url = user.profile_pic_url_hd || user.profile_pic_url || null;
           }
           if (!name) {
-            // meta title: sometimes "Full Name (@handle) • Instagram"
+            // meta title: sometimes "Full Name (@handle) - Instagram"
             try {
               const og = document.querySelector('meta[property="og:title"]') || document.querySelector('meta[name="title"]');
               if (og && og.content) {
                 const m = og.content.match(/(.+?)\s*\(@?([^\)]+)\)/);
                 if (m && m[1]) {
                   const cand = m[1].trim();
-                  if (cand && cand.toLowerCase() !== handle) name = cand;
+                  if (normalizeHandle(m[2]) === handle) name = cleanDisplayName(cand, handle);
                 } else {
-                  const split = og.content.split('•')[0].trim();
-                  if (split && split.toLowerCase() !== handle) name = split;
+                  const split = og.content.split(/[\u2022\u00b7]/)[0].trim();
+                  if (split && split.toLowerCase().includes(handle)) name = cleanDisplayName(split, handle);
                 }
               }
             } catch (e) {}
@@ -526,7 +569,8 @@
                 const el = document.querySelector(sel);
                 if (!el) continue;
                 const t = (el.innerText || el.textContent || '').trim();
-                if (t && t.length > 0 && t.toLowerCase() !== handle) { name = t; break; }
+                const clean = cleanDisplayName(t, handle);
+                if (clean) { name = clean; break; }
               } catch (e) {}
             }
           }
@@ -542,6 +586,7 @@
 
       const namePic = extractNameAndPic();
       const extras = extractBioAndExtras();
+      const displayName = cleanDisplayName(namePic.name, handle) || cleanDisplayName(extras.category_label, handle);
 
       const followers = (counts.followers !== null) ? counts.followers : null;
       const following = (counts.following !== null) ? counts.following : null;
@@ -549,7 +594,9 @@
 
       // Avoid returning the handle as the bio; prefer an empty bio in that case
       let bioVal = (extras.bio || '');
-      if (bioVal && (bioVal.trim().toLowerCase() === handle || bioVal.trim() === (namePic.name || ''))) bioVal = '';
+      const bioKey = normalizeHandle(bioVal);
+      const nameKey = normalizeHandle(namePic.name || '');
+      if (bioVal && (bioKey === handle || bioKey === urlHandle || (nameKey && bioKey === nameKey))) bioVal = '';
 
       return {
         followers: (typeof followers === 'number') ? followers : null,
@@ -560,7 +607,7 @@
         external_link_present: !!extras.external_link_present,
         verified_badge: !!extras.verified_badge,
         is_private: !!extras.is_private,
-        name: namePic.name || (extras.category_label || null),
+        name: displayName,
         profile_picture_url: namePic.profile_picture_url || null
       };
     } catch (e) {
@@ -573,7 +620,7 @@
     (async () => {
       try {
         let base = collectProfile();
-        if (!((base.handle && base.handle.length > 0) || (typeof base.followers === 'number' && base.followers > 0) || (typeof base.following === 'number' && base.following > 0) || (typeof base.posts === 'number' && base.posts > 0))) {
+        if (base.followers === null && base.following === null && base.posts === null) {
           base = await waitForProfileData(5000, 300);
         }
 

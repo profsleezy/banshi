@@ -5,23 +5,23 @@ import { useSearchParams } from 'next/navigation'
 import DashboardShell from '../../../components/DashboardShell'
 import { setClientMonitoring } from '../../../lib/clients'
 
-export default function LinkedPage() {
+export default function UnlinkedPage() {
   const params = useSearchParams()
   const clientId = params.get('client_id')
   const handle = params.get('handle')
-  const existed = params.get('existed') === '1'
+  const syncOnly = params.get('sync_only') === '1'
   const [status, setStatus] = useState<'syncing' | 'ready' | 'error'>('syncing')
 
   useEffect(() => {
     let mounted = true
 
     async function syncMonitoring() {
-      if (!clientId) {
-        setStatus('error')
+      if (syncOnly || !clientId) {
+        setStatus('ready')
         return
       }
 
-      const res = await setClientMonitoring(clientId, true)
+      const res = await setClientMonitoring(clientId, false)
       if (!mounted) return
       setStatus(res.error ? 'error' : 'ready')
     }
@@ -30,30 +30,30 @@ export default function LinkedPage() {
     return () => {
       mounted = false
     }
-  }, [clientId])
+  }, [clientId, syncOnly])
 
   return (
     <DashboardShell>
       <div className="p-6">
         <div className="max-w-xl rounded border border-zinc-800 bg-zinc-900 p-5">
-          <div className="text-xs uppercase tracking-wide text-zinc-500">Extension Link</div>
+          <div className="text-xs uppercase tracking-wide text-zinc-500">Extension Sync</div>
           <h1 className="mt-2 text-xl font-semibold text-zinc-100">
-            {status === 'ready' ? 'Monitoring Started' : status === 'error' ? 'Needs Attention' : 'Finishing Setup'}
+            {syncOnly ? 'Extension Updated' : status === 'ready' ? 'Monitoring Paused' : status === 'error' ? 'Needs Attention' : 'Pausing Monitoring'}
           </h1>
 
           <p className="mt-3 text-sm text-zinc-400">
             {handle ? <><strong className="text-zinc-100">@{handle}</strong> </> : null}
-            {status === 'ready'
-              ? 'is now linked to the extension and will be included in future snapshots.'
-              : status === 'error'
-                ? 'was detected, but monitoring state could not be confirmed.'
-                : 'is being synced with your dashboard and extension.'}
+            {syncOnly
+              ? 'was removed from the extension monitored list.'
+              : status === 'ready'
+                ? 'will remain in your dashboard history, but the extension will stop taking new snapshots.'
+                : status === 'error'
+                  ? 'was removed locally, but the dashboard state could not be confirmed.'
+                  : 'is being removed from active extension monitoring.'}
           </p>
 
-          {existed && <p className="mt-3 text-sm text-amber-200">This profile already existed, so monitoring was re-enabled instead of creating a duplicate.</p>}
-
           <div className="mt-5 flex flex-col gap-2 sm:flex-row">
-            <a href="/dashboard" className="inline-flex flex-1 justify-center rounded border border-emerald-500/30 px-3 py-2 text-sm font-medium text-emerald-200 hover:bg-emerald-500/10">
+            <a href="/dashboard" className="inline-flex flex-1 justify-center rounded border border-zinc-800 px-3 py-2 text-sm text-zinc-300 hover:border-zinc-700">
               Open Dashboard
             </a>
             <button

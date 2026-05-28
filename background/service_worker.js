@@ -4,6 +4,45 @@ const STORAGE_ENABLED_KEY = 'banshi_enabled';
 const STORAGE_SELECTED_CLIENT_KEY = 'banshi_selected_client_id';
 const STORAGE_MONITORED_KEY = 'banshi_monitored_clients';
 const DEFAULT_API_BASE = 'http://localhost:3000';
+const IG_PROFILE_PATH_BLACKLIST = ['p', 'explore', 'stories', 'direct', 'accounts', 'a', 'reel', 'reels', 'tag', 'tv', 'about', 'developer', 'graphql'];
+
+function normalizeHandle(value) {
+  return String(value || '').trim().replace(/^@/, '').toLowerCase();
+}
+
+function cleanDisplayName(value, handle) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+
+  const nameKey = normalizeHandle(text);
+  const handleKey = normalizeHandle(handle);
+  if (!nameKey || nameKey === handleKey) return null;
+
+  const compactName = nameKey.replace(/[^a-z0-9]/g, '');
+  const compactHandle = handleKey.replace(/[^a-z0-9]/g, '');
+  const nameParts = nameKey.split(/[^a-z0-9]+/).filter((part) => part.length >= 3);
+  const handleParts = handleKey.split(/[^a-z0-9]+/).filter((part) => part.length >= 3);
+  const related =
+    compactHandle.includes(compactName) ||
+    compactName.includes(compactHandle) ||
+    nameParts.some((part) => compactHandle.includes(part)) ||
+    handleParts.some((part) => compactName.includes(part));
+
+  return related ? text : null;
+}
+
+function getInstagramHandleFromUrl(url) {
+  try {
+    const u = new URL(url);
+    const parts = u.pathname.split('/').filter(Boolean);
+    if (!parts.length) return '';
+    const first = normalizeHandle(parts[0]);
+    if (!first || IG_PROFILE_PATH_BLACKLIST.includes(first)) return '';
+    return first;
+  } catch (e) {
+    return '';
+  }
+}
 
 function setBadge(state) {
   // state: 'ON', 'ERR', ''
@@ -63,6 +102,19 @@ function getStoredValues() {
         selected_client: res && res[STORAGE_SELECTED_CLIENT_KEY] ? res[STORAGE_SELECTED_CLIENT_KEY] : null,
         monitored: res && res[STORAGE_MONITORED_KEY] ? res[STORAGE_MONITORED_KEY] : {}
       });
+    });
+  });
+}
+
+function removeMonitoredHandle(handle, reason) {
+  if (!handle) return;
+  chrome.storage.local.get([STORAGE_MONITORED_KEY], (r) => {
+    const m = r && r[STORAGE_MONITORED_KEY] ? r[STORAGE_MONITORED_KEY] : {};
+    if (!m[handle]) return;
+    delete m[handle];
+    chrome.storage.local.set({ [STORAGE_MONITORED_KEY]: m }, () => {
+      console.log('Removed monitored client', handle, reason || '');
+      if (Object.keys(m).length === 0) setBadge('');
     });
   });
 }
@@ -131,21 +183,13 @@ async function performSnapshots() {
     }
     let anySuccess = false;
     let foundMonitoredOpen = false;
+    let postAttempts = 0;
+    let disabledSkips = 0;
+    let hadActionableFailure = false;
     for (const tab of tabs) {
       try {
         // determine handle from URL path if possible
-        let handle = null;
-        try {
-          const u = new URL(tab.url);
-          const parts = u.pathname.split('/').filter(Boolean);
-          if (parts.length > 0) {
-            const first = parts[0].toLowerCase();
-            const blacklist = ['p','explore','stories','direct','accounts','a','reel','tag','tv','about','developer','graphql'];
-            if (!blacklist.includes(first)) handle = first;
-          }
-        } catch (e) {
-          // ignore URL parse errors
-        }
+        let handle = getInstagramHandleFromUrl(tab.url);
         let profileData = null;
 
         // If we have a handle from the URL and it's not monitored, skip messaging this tab.
@@ -185,8 +229,8 @@ async function performSnapshots() {
             following: (profileData && typeof profileData.following === 'number') ? profileData.following : null,
             posts: (profileData && typeof profileData.posts === 'number') ? profileData.posts : null,
             bio: (profileData && typeof profileData.bio === 'string') ? profileData.bio : '',
-            handle: profileData && profileData.handle ? profileData.handle : handle,
-            name: (profileData && profileData.name) ? profileData.name : (monitoredEntry && monitoredEntry.name ? monitoredEntry.name : null),
+            handle: handle,
+            name: cleanDisplayName(profileData && profileData.name, handle) || cleanDisplayName(monitoredEntry && monitoredEntry.name, handle),
             profile_picture_url: (profileData && profileData.profile_picture_url) ? profileData.profile_picture_url : null,
             // extras collected by the content script (best-effort)
             external_link_present: !!(profileData && profileData.external_link_present),
@@ -199,6 +243,7 @@ async function performSnapshots() {
         // send to backend (partial payload allowed)
         try {
           console.log('performSnapshots: POST to', (api_base || DEFAULT_API_BASE) + '/api/events', 'payload', payload);
+          postAttempts += 1;
           const res = await fetch((api_base || DEFAULT_API_BASE) + '/api/events', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -207,6 +252,16 @@ async function performSnapshots() {
           let body = null
           try { body = await res.json() } catch (e) { /* ignore */ }
           console.log('performSnapshots: response', res && res.status, body);
+          if (res && res.ok && body && body.success && body.skipped && body.reason === 'monitoring_disabled') {
+            disabledSkips += 1;
+            removeMonitoredHandle(handle, 'after server disabled skip');
+            continue;
+          }
+          if (res && body && body.error === 'Client not found') {
+            disabledSkips += 1;
+            removeMonitoredHandle(handle, 'after missing client response');
+            continue;
+          }
           if (res && res.ok && body && body.success) {
             anySuccess = true;
             // update monitored last_synced
@@ -222,18 +277,21 @@ async function performSnapshots() {
               // ignore
             }
           } else {
+            hadActionableFailure = true;
             console.warn('performSnapshots: backend returned error', res && res.status, body)
           }
         } catch (e) {
+          hadActionableFailure = true;
           console.error('performSnapshots: fetch exception', e);
         }
       } catch (e) {
+        hadActionableFailure = true;
         console.warn('performSnapshots: tab processing failed', e);
         continue;
       }
     }
     if (anySuccess) setBadge('ON');
-    else if (foundMonitoredOpen) setBadge('ERR');
+    else if (hadActionableFailure || (foundMonitoredOpen && postAttempts === 0 && disabledSkips === 0)) setBadge('ERR');
     else setBadge('');
   });
 }
@@ -278,10 +336,13 @@ chrome.action.onClicked.addListener(async (tab) => {
 
     const vals = await getStoredValues()
     const base = vals.api_base || DEFAULT_API_BASE
+    const urlHandle = getInstagramHandleFromUrl(tab.url)
+    const linkHandle = urlHandle || normalizeHandle(profileData && profileData.handle)
+    const bio = profileData && typeof profileData.bio === 'string' ? profileData.bio.trim() : ''
     const params = new URLSearchParams()
-    if (profileData && profileData.handle) params.set('handle', profileData.handle)
+    if (linkHandle) params.set('handle', linkHandle)
     if (profileData && typeof profileData.followers === 'number') params.set('followers', String(profileData.followers))
-    if (profileData && profileData.bio) params.set('bio', profileData.bio)
+    if (bio && normalizeHandle(bio) !== linkHandle) params.set('bio', bio)
 
     const url = base.replace(/\/$/, '') + '/extension/link' + (params.toString() ? ('?' + params.toString()) : '')
     try { chrome.tabs.create({ url }) } catch (e) { console.warn('open link page failed', e) }
@@ -320,6 +381,33 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
           })
         }
       }
+    } else if (u.pathname === '/extension/unlinked') {
+      const cid = u.searchParams.get('client_id')
+      const handle = u.searchParams.get('handle')
+      if (cid || handle) {
+        chrome.storage.local.get([STORAGE_SELECTED_CLIENT_KEY, STORAGE_MONITORED_KEY], (res) => {
+          const m = (res && res[STORAGE_MONITORED_KEY]) ? res[STORAGE_MONITORED_KEY] : {};
+          const next = {};
+          const targetHandle = handle ? handle.toLowerCase() : null;
+
+          Object.keys(m).forEach((key) => {
+            const entry = m[key] || {};
+            const keyMatches = targetHandle && key.toLowerCase() === targetHandle;
+            const idMatches = cid && entry.client_id === cid;
+            if (!keyMatches && !idMatches) next[key] = entry;
+          });
+
+          const updates = { [STORAGE_MONITORED_KEY]: next };
+          if (cid && res && res[STORAGE_SELECTED_CLIENT_KEY] === cid) {
+            updates[STORAGE_SELECTED_CLIENT_KEY] = null;
+          }
+
+          chrome.storage.local.set(updates, () => {
+            console.log('Removed monitored client', handle, cid);
+            if (Object.keys(next).length === 0) setBadge('');
+          });
+        });
+      }
     }
   } catch (e) {
     // ignore
@@ -345,10 +433,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       const vals = await getStoredValues()
       const base = vals.api_base || DEFAULT_API_BASE
+      const urlHandle = getInstagramHandleFromUrl(tab.url)
+      const linkHandle = urlHandle || normalizeHandle(profileData && profileData.handle)
+      const bio = profileData && typeof profileData.bio === 'string' ? profileData.bio.trim() : ''
       const params = new URLSearchParams()
-      if (profileData && profileData.handle) params.set('handle', profileData.handle)
+      if (linkHandle) params.set('handle', linkHandle)
       if (profileData && typeof profileData.followers === 'number') params.set('followers', String(profileData.followers))
-      if (profileData && profileData.bio) params.set('bio', profileData.bio)
+      if (bio && normalizeHandle(bio) !== linkHandle) params.set('bio', bio)
 
       const url = base.replace(/\/$/, '') + '/extension/link' + (params.toString() ? ('?' + params.toString()) : '')
       try { chrome.tabs.create({ url }) } catch (e) { console.warn('open link page failed', e) }

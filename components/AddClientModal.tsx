@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 
 export type NewClientData = {
   client_name: string
@@ -12,15 +12,26 @@ export type NewClientData = {
 type Props = {
   open: boolean
   onClose: () => void
-  onSubmit: (data: NewClientData) => void
+  onSubmit: (data: NewClientData) => void | Promise<void>
+  submitting?: boolean
 }
 
-export default function AddClientModal({ open, onClose, onSubmit }: Props) {
+export default function AddClientModal({ open, onClose, onSubmit, submitting = false }: Props) {
   const [clientName, setClientName] = useState('')
   const [platform, setPlatform] = useState<NewClientData['platform']>('Meta')
   const [accountId, setAccountId] = useState('')
   const [notes, setNotes] = useState('')
   const [errors, setErrors] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (!open) {
+      setClientName('')
+      setPlatform('Meta')
+      setAccountId('')
+      setNotes('')
+      setErrors({})
+    }
+  }, [open])
 
   if (!open) return null
 
@@ -32,23 +43,16 @@ export default function AddClientModal({ open, onClose, onSubmit }: Props) {
     return Object.keys(e).length === 0
   }
 
-  function handleSubmit(e?: React.FormEvent) {
+  async function handleSubmit(e?: FormEvent) {
     e?.preventDefault()
+    if (submitting) return
     if (!validate()) return
-    onSubmit({ client_name: clientName.trim(), platform, account_id: accountId.trim(), notes: notes.trim() || undefined })
-    // leave closing to caller or close here for convenience
-    onClose()
-    // reset local state
-    setClientName('')
-    setPlatform('Meta')
-    setAccountId('')
-    setNotes('')
-    setErrors({})
+    await onSubmit({ client_name: clientName.trim(), platform, account_id: accountId.trim(), notes: notes.trim() || undefined })
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/50" onClick={submitting ? undefined : onClose} />
 
       <div className="relative w-full max-w-md mx-4 bg-zinc-900 border border-zinc-800 rounded shadow-lg p-6">
         <h3 className="text-lg font-medium mb-4">Add Client</h3>
@@ -99,11 +103,11 @@ export default function AddClientModal({ open, onClose, onSubmit }: Props) {
           </div>
 
           <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={onClose} className="px-3 py-1 border border-zinc-800 rounded text-sm">
+            <button type="button" onClick={onClose} disabled={submitting} className="px-3 py-1 border border-zinc-800 rounded text-sm disabled:cursor-not-allowed disabled:opacity-50">
               Cancel
             </button>
-            <button type="submit" className="px-3 py-1 bg-emerald-700 text-white rounded text-sm">
-              Add client
+            <button type="submit" disabled={submitting} className="px-3 py-1 bg-emerald-700 text-white rounded text-sm disabled:cursor-not-allowed disabled:opacity-60">
+              {submitting ? 'Adding...' : 'Add client'}
             </button>
           </div>
         </form>

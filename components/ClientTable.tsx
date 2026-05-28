@@ -1,88 +1,262 @@
 "use client"
 
-import React from 'react'
-
 export type ClientRow = {
   id: string
   name: string
   platform: string
+  accountId?: string | null
+  monitoringEnabled?: boolean | null
+  handle?: string | null
+  profileName?: string | null
   riskStatus?: string | null
+  riskScore?: number | null
+  riskReason?: string | null
   lastChecked?: string | null
   latestAlert?: string | null
+  latestAlertSeverity?: 'warning' | 'critical' | null
   followers?: number | null
+  following?: number | null
+  posts?: number | null
+  followRatio?: number | null
+  followRatioDriftPct?: number | null
+  followerVelocity7d?: number | null
+  followerPctChange30d?: number | null
+  followingVelocity7d?: number | null
+  postGrowthRate30d?: number | null
+  profileStabilityScore?: number | null
+  accountAgeConfidence?: number | null
+  snapshotCount?: number | null
+  usernameChangeDetected?: boolean | null
+  externalLinkPresent?: boolean | null
+  verifiedBadge?: boolean | null
+  isPrivate?: boolean | null
+  snapshotAt?: string | null
 }
 
 type Props = {
   clients: ClientRow[]
   loading?: boolean
+  monitoringClientId?: string | null
+  unmonitoringClientId?: string | null
+  removingClientId?: string | null
+  onMonitorClient?: (client: ClientRow) => void
+  onUnmonitorClient?: (client: ClientRow) => void
+  onRemoveClient?: (client: ClientRow) => void
 }
 
-export default function ClientTable({ clients, loading = false }: Props) {
+function statusClass(status?: string | null) {
+  if (status === 'Critical') return 'border-red-500/40 bg-red-500/10 text-red-200'
+  if (status === 'Risk') return 'border-orange-500/40 bg-orange-500/10 text-orange-200'
+  if (status === 'Watch') return 'border-amber-500/40 bg-amber-500/10 text-amber-100'
+  if (status === 'Healthy') return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+  return 'border-zinc-700 bg-zinc-950 text-zinc-400'
+}
+
+function signalClass(kind: 'good' | 'warn' | 'bad' | 'neutral') {
+  if (kind === 'good') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+  if (kind === 'warn') return 'border-amber-500/30 bg-amber-500/10 text-amber-100'
+  if (kind === 'bad') return 'border-red-500/30 bg-red-500/10 text-red-200'
+  return 'border-zinc-700 bg-zinc-950 text-zinc-300'
+}
+
+function formatNumber(value?: number | null) {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '-'
+  return value.toLocaleString()
+}
+
+function formatCompact(value?: number | null) {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '-'
+  return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return 'No snapshot yet'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'No snapshot yet'
+  return date.toLocaleString()
+}
+
+function formatMetric(value?: number | null, digits = 1) {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '-'
+  return value.toFixed(digits)
+}
+
+function formatSigned(value?: number | null, suffix = '') {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '-'
+  const sign = value > 0 ? '+' : ''
+  return `${sign}${value.toFixed(1)}${suffix}`
+}
+
+function Avatar({ client }: { client: ClientRow }) {
+  return (
+    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border border-zinc-800 bg-zinc-950 text-lg font-semibold text-zinc-400">
+      {(client.profileName || client.name || '?').slice(0, 1).toUpperCase()}
+    </div>
+  )
+}
+
+function Stat({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return (
+    <div className="rounded border border-zinc-800 bg-zinc-950/60 px-4 py-3">
+      <div className="text-xs text-zinc-500">{label}</div>
+      <div className="mt-1 text-xl font-semibold text-zinc-50">{value}</div>
+      {detail && <div className="mt-1 text-xs text-zinc-500">{detail}</div>}
+    </div>
+  )
+}
+
+function SmallMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-xs text-zinc-500">{label}</div>
+      <div className="mt-1 text-sm font-medium text-zinc-200">{value}</div>
+    </div>
+  )
+}
+
+function Signals({ client }: { client: ClientRow }) {
+  const signals: Array<{ label: string; kind: 'good' | 'warn' | 'bad' | 'neutral' }> = []
+
+  if (client.monitoringEnabled === false) signals.push({ label: 'Monitoring paused', kind: 'warn' })
+  if (client.externalLinkPresent) signals.push({ label: 'External link', kind: 'warn' })
+  if (client.usernameChangeDetected) signals.push({ label: 'Username changed', kind: 'bad' })
+  if (client.verifiedBadge) signals.push({ label: 'Verified', kind: 'good' })
+  if (client.isPrivate) signals.push({ label: 'Private', kind: 'neutral' })
+  if (client.latestAlert) signals.push({ label: 'Alert present', kind: client.latestAlertSeverity === 'critical' ? 'bad' : 'warn' })
+  if (signals.length === 0) signals.push({ label: 'No flagged changes', kind: 'good' })
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {signals.map((signal) => (
+        <span key={signal.label} className={`rounded border px-2.5 py-1 text-xs font-medium ${signalClass(signal.kind)}`}>
+          {signal.label}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+export default function ClientTable({
+  clients,
+  loading = false,
+  monitoringClientId,
+  unmonitoringClientId,
+  removingClientId,
+  onMonitorClient,
+  onUnmonitorClient,
+  onRemoveClient,
+}: Props) {
   if (loading) {
     return (
-      <div className="p-4 bg-zinc-900 border border-zinc-800 rounded">
-        <div className="animate-pulse space-y-3">
-          <div className="h-6 w-1/3 bg-zinc-800 rounded" />
-          <div className="h-40 bg-zinc-800 rounded" />
+      <div className="rounded border border-zinc-800 bg-zinc-900 p-5">
+        <div className="animate-pulse space-y-4">
+          <div className="h-6 w-1/4 rounded bg-zinc-800" />
+          <div className="h-32 rounded bg-zinc-800" />
         </div>
       </div>
     )
   }
 
-  if (!loading && clients.length === 0) {
+  if (clients.length === 0) {
     return (
-      <div className="p-6 bg-zinc-900 border border-zinc-800 rounded text-center text-zinc-400">
-        No clients yet. Click "Add Client" to get started.
+      <div className="rounded border border-dashed border-zinc-800 bg-zinc-900 p-10 text-center">
+        <div className="text-sm font-medium text-zinc-200">No clients yet</div>
+        <div className="mt-1 text-sm text-zinc-500">Add a client or link one from the extension to start collecting snapshots.</div>
       </div>
     )
   }
 
   return (
-    <div className="p-4 bg-zinc-900 border border-zinc-800 rounded">
-      <div className="hidden md:block">
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="text-zinc-400">
-              <th className="pb-2">Client Name</th>
-              <th className="pb-2">Platform</th>
-              <th className="pb-2">Risk Status</th>
-              <th className="pb-2">Last Checked</th>
-              <th className="pb-2">Latest Alert</th>
-            </tr>
-          </thead>
-          <tbody>
-            {clients.map(c => (
-              <tr key={c.id} className="border-t border-zinc-800">
-                <td className="py-3 flex items-center gap-3">
-                  <div className="text-sm text-zinc-400">{c.name}</div>
-                  {typeof c.followers === 'number' && (
-                    <div className="text-xs text-zinc-500">{c.followers.toLocaleString()} followers</div>
-                  )}
-                </td>
-                <td className="py-3">{c.platform}</td>
-                <td className="py-3">{c.riskStatus ?? '—'}</td>
-                <td className="py-3">{c.lastChecked ? new Date(c.lastChecked).toLocaleString() : '—'}</td>
-                <td className="py-3">{c.latestAlert ?? '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div className="space-y-4">
+      {clients.map((client) => {
+        const monitoring = monitoringClientId === client.id
+        const unmonitoring = unmonitoringClientId === client.id
+        const removing = removingClientId === client.id
+        const paused = client.monitoringEnabled === false
+        const riskStatus = client.riskStatus ?? 'No score'
 
-      {/* Mobile view */}
-      <div className="md:hidden space-y-3">
-        {clients.map(c => (
-          <div key={c.id} className="p-3 border border-zinc-800 rounded">
-            <div className="flex justify-between">
-              <div className="font-medium">{c.name}</div>
-              <div className="text-xs text-zinc-400">{c.platform}</div>
+        return (
+          <article key={client.id} className={`rounded border bg-zinc-900 p-5 shadow-sm ${paused ? 'border-amber-500/30' : 'border-zinc-800'}`}>
+            <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-start gap-4">
+                  <Avatar client={client} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="truncate text-xl font-semibold text-zinc-50">{client.profileName || client.name}</h3>
+                      <span className={`rounded border px-2.5 py-1 text-xs font-medium ${statusClass(client.riskStatus)}`}>
+                        {riskStatus}{typeof client.riskScore === 'number' ? ` ${client.riskScore}` : ''}
+                      </span>
+                      <span className={`rounded border px-2.5 py-1 text-xs font-medium ${paused ? signalClass('warn') : signalClass('good')}`}>
+                        {paused ? 'Paused' : 'Monitoring'}
+                      </span>
+                    </div>
+                    <div className="mt-1 truncate text-sm text-zinc-500">
+                      @{client.handle || client.accountId || 'unknown'} - {client.platform}
+                    </div>
+                    <div className="mt-2 text-xs text-zinc-600">Latest snapshot: {formatDate(client.snapshotAt || client.lastChecked)}</div>
+                  </div>
+                </div>
+
+                <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <Stat label="Followers" value={formatCompact(client.followers)} detail={`${formatNumber(client.following)} following`} />
+                  <Stat label="Posts" value={formatNumber(client.posts)} detail={`Ratio ${formatMetric(client.followRatio, 2)}`} />
+                  <Stat label="Stability" value={typeof client.profileStabilityScore === 'number' ? `${client.profileStabilityScore}/100` : '-'} detail={`${formatNumber(client.snapshotCount)} snapshots`} />
+                </div>
+
+                <div className="mt-5 grid grid-cols-2 gap-4 border-t border-zinc-800 pt-4 md:grid-cols-4">
+                  <SmallMetric label="7d follower velocity" value={formatSigned(client.followerVelocity7d, '/day')} />
+                  <SmallMetric label="30d follower change" value={formatSigned(client.followerPctChange30d, '%')} />
+                  <SmallMetric label="Follow drift" value={formatSigned(client.followRatioDriftPct, '%')} />
+                  <SmallMetric label="Confidence" value={typeof client.accountAgeConfidence === 'number' ? `${Math.round(client.accountAgeConfidence * 100)}%` : '-'} />
+                </div>
+              </div>
+
+              <div className="w-full shrink-0 xl:w-72">
+                <div className="rounded border border-zinc-800 bg-zinc-950/50 p-4">
+                  <div className="mb-3 text-xs font-medium uppercase tracking-wide text-zinc-500">Signals</div>
+                  <Signals client={client} />
+                  {client.riskReason && <div className="mt-4 text-xs leading-5 text-zinc-500">{client.riskReason}</div>}
+                  {client.latestAlert && <div className="mt-4 text-xs leading-5 text-zinc-500">{client.latestAlert}</div>}
+                </div>
+
+                {paused && onMonitorClient && (
+                  <button
+                    type="button"
+                    disabled={monitoring || unmonitoring || removing}
+                    onClick={() => onMonitorClient(client)}
+                    className="mt-3 w-full rounded border border-emerald-500/30 px-3 py-2 text-sm font-medium text-emerald-200 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {monitoring ? 'Monitoring...' : 'Monitor'}
+                  </button>
+                )}
+
+                {!paused && onUnmonitorClient && (
+                  <button
+                    type="button"
+                    disabled={monitoring || unmonitoring || removing}
+                    onClick={() => onUnmonitorClient(client)}
+                    className="mt-3 w-full rounded border border-amber-500/30 px-3 py-2 text-sm font-medium text-amber-100 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {unmonitoring ? 'Unmonitoring...' : 'Unmonitor'}
+                  </button>
+                )}
+
+                {onRemoveClient && (
+                  <button
+                    type="button"
+                    disabled={removing || unmonitoring || monitoring}
+                    onClick={() => onRemoveClient(client)}
+                    className="mt-3 w-full rounded border border-red-500/30 px-3 py-2 text-sm font-medium text-red-200 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {removing ? 'Removing...' : 'Remove Client'}
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="mt-2 text-xs text-zinc-400">Risk: {c.riskStatus ?? '—'}</div>
-            <div className="mt-1 text-xs text-zinc-400">Last: {c.lastChecked ? new Date(c.lastChecked).toLocaleString() : '—'}</div>
-            <div className="mt-1 text-xs text-zinc-400">Alert: {c.latestAlert ?? '—'}</div>
-          </div>
-        ))}
-      </div>
+          </article>
+        )
+      })}
     </div>
   )
 }
