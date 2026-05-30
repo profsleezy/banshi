@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import apiUtils from '../../../../lib/apiUtils'
 import logger from '../../../../lib/logger'
+import { requireUserAccess } from '../../../../lib/accessControl'
 
 function getBearerToken(req: Request) {
   const header = req.headers.get('authorization') || ''
@@ -52,6 +53,8 @@ export async function POST(req: Request) {
 
     const admin = apiUtils.makeAdminClient()
     const db = admin ?? authClient
+    const access = await requireUserAccess(admin ?? db, user.id)
+    if (!access.ok) return access.response
 
     const { data: clients, error: clientsError } = await db
       .from('clients')

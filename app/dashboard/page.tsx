@@ -1,14 +1,17 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import DashboardShell from '../../components/DashboardShell'
+import TerminalIcon, { type IconName } from '../../components/TerminalIcon'
 import supabase from '../../lib/supabase'
 import { signOut } from '../../lib/auth'
-import { deleteClientAndRelated, getClients, setClientMonitoring } from '../../lib/clients'
+import { deleteClientAndRelated, getClients, issueClientIngestToken, setClientMonitoring } from '../../lib/clients'
 import ClientTable, { ClientRow } from '../../components/ClientTable'
 import { getRecentAlerts } from '../../lib/alerts'
 import AlertFeed from '../../components/AlertFeed'
+import { PaywallPanel, useAccessStatus } from '../../components/AccessGate'
 
 type AlertItem = {
   id: string
@@ -216,6 +219,44 @@ function timeAgo(value?: string | null) {
   return `${days}d ago`
 }
 
+function hoursSince(value?: string | null) {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return Math.max(0, (Date.now() - date.getTime()) / 3600000)
+}
+
+function dashboardReadiness(input: {
+  monitoringEnabled: boolean
+  snapshotAt?: string | null
+  snapshotCount?: number | null
+  accountAgeConfidence?: number | null
+  riskStatus?: string | null
+  externalLinkPresent?: boolean | null
+  usernameChangeDetected?: boolean | null
+}) {
+  const staleHours = hoursSince(input.snapshotAt)
+  const staleData = input.monitoringEnabled && (staleHours === null || staleHours > 6)
+  let score = 100
+  if (!input.monitoringEnabled) score -= 35
+  if (!input.snapshotAt) score -= 35
+  else if ((staleHours ?? 0) > 24) score -= 30
+  else if ((staleHours ?? 0) > 6) score -= 18
+  if (typeof input.snapshotCount !== 'number' || input.snapshotCount < 3) score -= 25
+  else if (input.snapshotCount < 10) score -= 12
+  if (typeof input.accountAgeConfidence !== 'number') score -= 10
+  else if (input.accountAgeConfidence < 0.5) score -= 15
+  else if (input.accountAgeConfidence < 0.8) score -= 8
+  if (input.riskStatus === 'Critical') score -= 15
+  else if (input.riskStatus === 'Risk') score -= 10
+  else if (input.riskStatus === 'Watch') score -= 5
+  if (input.externalLinkPresent) score -= 4
+  if (input.usernameChangeDetected) score -= 10
+  const banRiskReadinessScore = Math.max(0, Math.min(100, Math.round(score)))
+  const banRiskReadinessLevel: ClientRow['banRiskReadinessLevel'] = banRiskReadinessScore >= 75 ? 'Ready' : banRiskReadinessScore >= 50 ? 'Watch' : 'Exposed'
+  return { staleData, staleHours, banRiskReadinessScore, banRiskReadinessLevel }
+}
+
 function statusClass(status?: string | null) {
   if (status === 'Critical') return 'border-red-500/40 bg-red-500/10 text-red-200'
   if (status === 'Risk') return 'border-orange-500/40 bg-orange-500/10 text-orange-200'
@@ -224,7 +265,7 @@ function statusClass(status?: string | null) {
   return 'border-zinc-700 bg-zinc-900 text-zinc-400'
 }
 
-function SnapshotCard({ title, value, caption, tone = 'neutral' }: { title: string; value: string | number; caption: string; tone?: 'neutral' | 'good' | 'warn' | 'bad' }) {
+function SnapshotCard({ title, value, caption, tone = 'neutral', icon }: { title: string; value: string | number; caption: string; tone?: 'neutral' | 'good' | 'warn' | 'bad'; icon: IconName }) {
   const toneClass = {
     neutral: 'text-zinc-100',
     good: 'text-emerald-200',
@@ -233,16 +274,24 @@ function SnapshotCard({ title, value, caption, tone = 'neutral' }: { title: stri
   }[tone]
 
   return (
-    <div className="rounded border border-zinc-800 bg-zinc-900 p-4">
-      <div className="text-xs uppercase text-zinc-500">{title}</div>
-      <div className={`mt-2 text-2xl font-semibold ${toneClass}`}>{value}</div>
-      <div className="mt-1 text-xs text-zinc-500">{caption}</div>
+    <div className="terminal-card rounded p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="terminal-label text-xs">{title}</div>
+          <div className={`mt-2 text-2xl font-semibold ${toneClass}`}>{value}</div>
+        </div>
+        <div className="flex h-9 w-9 items-center justify-center rounded border border-emerald-300/20 bg-emerald-300/10 text-emerald-200">
+          <TerminalIcon name={icon} className="h-4 w-4" />
+        </div>
+      </div>
+      <div className="mt-2 text-xs text-zinc-500">{caption}</div>
     </div>
   )
 }
 
 export default function DashboardPage() {
   const router = useRouter()
+  const access = useAccessStatus()
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [dashboardError, setDashboardError] = useState<string | null>(null)
@@ -407,16 +456,33 @@ export default function DashboardPage() {
         const profileStabilityScore = safeNumber(derived.profile_stability_score)
         const fallbackScore = profileStabilityScore !== null ? Math.max(0, 100 - profileStabilityScore) : null
         const fallbackStatus = latest ? 'Healthy' : null
+        const monitoringEnabled = (client as any).monitoring_enabled !== false
+        const riskStatus = risk?.status ?? latestHistory?.level ?? fallbackStatus
+        const snapshotAt = latest?.created_at ?? null
+        const snapshotCount = safeNumber(derived.snapshot_count)
+        const accountAgeConfidence = safeNumber(derived.account_age_confidence)
+        const usernameChangeDetected = typeof derived.username_change_detected === 'boolean' ? derived.username_change_detected : null
+        const externalLinkValue = readAny(sources, ['external_link_present'])
+        const externalLinkPresent = typeof externalLinkValue === 'boolean' ? externalLinkValue : null
+        const readiness = dashboardReadiness({
+          monitoringEnabled,
+          snapshotAt,
+          snapshotCount,
+          accountAgeConfidence,
+          riskStatus,
+          externalLinkPresent,
+          usernameChangeDetected,
+        })
 
         return {
           id: client.id,
           name: client.name,
           platform: client.platform ?? 'IG',
           accountId: client.account_id,
-          monitoringEnabled: (client as any).monitoring_enabled !== false,
+          monitoringEnabled,
           handle: displayHandle,
           profileName: cleanProfileName(name, displayHandle, fallbackName),
-          riskStatus: risk?.status ?? latestHistory?.level ?? fallbackStatus,
+          riskStatus,
           riskScore: safeNumber(risk?.score) ?? safeNumber(latestHistory?.score) ?? fallbackScore,
           riskReason: risk?.notes ?? latestHistory?.notes ?? (latest ? 'No suspicious metadata signals' : null),
           lastChecked: client.last_checked ?? client.updated_at ?? client.created_at,
@@ -432,13 +498,17 @@ export default function DashboardPage() {
           followingVelocity7d: safeNumber(derived.following_velocity_7d),
           postGrowthRate30d: safeNumber(derived.post_growth_rate_30d),
           profileStabilityScore,
-          accountAgeConfidence: safeNumber(derived.account_age_confidence),
-          snapshotCount: safeNumber(derived.snapshot_count),
-          usernameChangeDetected: typeof derived.username_change_detected === 'boolean' ? derived.username_change_detected : null,
-          externalLinkPresent: typeof readAny(sources, ['external_link_present']) === 'boolean' ? readAny(sources, ['external_link_present']) : null,
+          accountAgeConfidence,
+          snapshotCount,
+          staleData: readiness.staleData,
+          staleHours: readiness.staleHours,
+          banRiskReadinessScore: readiness.banRiskReadinessScore,
+          banRiskReadinessLevel: readiness.banRiskReadinessLevel,
+          usernameChangeDetected,
+          externalLinkPresent,
           verifiedBadge: typeof readAny(sources, ['verified_badge']) === 'boolean' ? readAny(sources, ['verified_badge']) : null,
           isPrivate: typeof readAny(sources, ['is_private']) === 'boolean' ? readAny(sources, ['is_private']) : null,
-          snapshotAt: latest?.created_at ?? null,
+          snapshotAt,
         }
       })
 
@@ -523,6 +593,65 @@ export default function DashboardPage() {
     })
   }, [clientRows])
 
+  const agencyQueue = useMemo(() => {
+    const monitoredRows = clientRows.filter((row) => row.monitoringEnabled !== false)
+    const needsReview = monitoredRows.filter((row) => ['Critical', 'Risk', 'Watch'].includes(row.riskStatus ?? ''))
+    const staleCoverage = monitoredRows.filter((row) => {
+      if (!row.snapshotAt) return true
+      const age = Date.now() - new Date(row.snapshotAt).getTime()
+      return Number.isNaN(age) || age < 0 || age > 24 * 60 * 60 * 1000
+    })
+    const thinBaseline = monitoredRows.filter((row) => typeof row.snapshotCount !== 'number' || row.snapshotCount < 10)
+    const linkReview = monitoredRows.filter((row) => row.externalLinkPresent)
+
+    return [
+      {
+        title: 'Today focus',
+        value: String(needsReview.length),
+        detail: needsReview[0]
+          ? `${needsReview[0].profileName || needsReview[0].name} should be reviewed first.`
+          : 'No urgent risk work.',
+        action: needsReview[0] ? 'Open report' : 'View roster',
+        href: needsReview[0] ? `/clients/${needsReview[0].id}` : '/clients',
+        icon: 'alert' as IconName,
+        tone: needsReview.length ? 'text-amber-100' : 'text-emerald-200',
+      },
+      {
+        title: 'Coverage check',
+        value: String(staleCoverage.length),
+        detail: staleCoverage.length
+          ? 'Tabs need to stay open for fresh snapshots.'
+          : 'Fresh coverage.',
+        action: 'Inspect clients',
+        href: '/clients',
+        icon: 'database' as IconName,
+        tone: staleCoverage.length ? 'text-amber-100' : 'text-emerald-200',
+      },
+      {
+        title: 'Baseline maturity',
+        value: String(thinBaseline.length),
+        detail: thinBaseline.length
+          ? 'More history needed before strong trend reads.'
+          : 'Baselines are maturing.',
+        action: 'Compare reports',
+        href: '/clients',
+        icon: 'chart' as IconName,
+        tone: thinBaseline.length ? 'text-zinc-100' : 'text-emerald-200',
+      },
+      {
+        title: 'Link review',
+        value: String(linkReview.length),
+        detail: linkReview.length
+          ? 'Confirm outbound links are client-approved.'
+          : 'No link review needed.',
+        action: 'Review signals',
+        href: linkReview[0] ? `/clients/${linkReview[0].id}` : '/clients',
+        icon: 'eye' as IconName,
+        tone: linkReview.length ? 'text-amber-100' : 'text-zinc-100',
+      },
+    ]
+  }, [clientRows])
+
   const openExtensionUnlinkedUrl = useCallback((client: ClientRow, options?: { syncOnly?: boolean }) => {
     const params = new URLSearchParams()
     params.set('client_id', client.id)
@@ -534,14 +663,19 @@ export default function DashboardPage() {
     window.open(`/extension/unlinked?${params.toString()}`, '_blank', 'noopener,noreferrer')
   }, [])
 
-  const openExtensionLinkedUrl = useCallback((client: ClientRow) => {
+  const openExtensionLinkedUrl = useCallback((client: ClientRow, ingestToken?: string, tokenCreatedAt?: string) => {
     const params = new URLSearchParams()
     params.set('client_id', client.id)
     const handle = client.handle || client.accountId || ''
     if (handle) params.set('handle', handle)
     params.set('name', client.profileName || client.name)
 
-    window.open(`/extension/linked?${params.toString()}`, '_blank', 'noopener,noreferrer')
+    const hash = new URLSearchParams()
+    if (ingestToken) hash.set('ingest_token', ingestToken)
+    if (tokenCreatedAt) hash.set('token_created_at', tokenCreatedAt)
+    const hashSuffix = hash.toString() ? `#${hash.toString()}` : ''
+
+    window.open(`/extension/linked?${params.toString()}${hashSuffix}`, '_blank', 'noopener,noreferrer')
   }, [])
 
   const handleMonitorClient = useCallback(async (client: ClientRow) => {
@@ -552,6 +686,12 @@ export default function DashboardPage() {
     setDashboardError(null)
     setMonitoringClientId(client.id)
     try {
+      const tokenRes = await issueClientIngestToken(client.id)
+      if (tokenRes.error || !tokenRes.data) {
+        setDashboardError((tokenRes.error as any)?.message ?? 'Failed to create secure extension token')
+        return
+      }
+
       const res = await setClientMonitoring(client.id, true)
       if (res.error) {
         setDashboardError((res.error as any)?.message ?? 'Failed to enable monitoring')
@@ -559,7 +699,7 @@ export default function DashboardPage() {
       }
 
       setClientRows((rows) => rows.map((row) => (row.id === client.id ? { ...row, monitoringEnabled: true } : row)))
-      openExtensionLinkedUrl(client)
+      openExtensionLinkedUrl(client, tokenRes.data.ingest_token, tokenRes.data.created_at)
       await fetchDashboardData(false)
     } finally {
       setMonitoringClientId(null)
@@ -612,6 +752,16 @@ export default function DashboardPage() {
     }
   }, [fetchDashboardData, openExtensionUnlinkedUrl])
 
+  if (access.loading) {
+    return (
+      <DashboardShell>
+        <div className="p-4 sm:p-6">
+          <div className="terminal-panel rounded p-5 text-sm text-zinc-400">Checking workspace access...</div>
+        </div>
+      </DashboardShell>
+    )
+  }
+
   if (loading) {
     return (
       <DashboardShell>
@@ -626,25 +776,39 @@ export default function DashboardPage() {
     )
   }
 
+  if (!access.active) {
+    return (
+      <DashboardShell>
+        <PaywallPanel access={access.access} error={access.error} />
+      </DashboardShell>
+    )
+  }
+
   return (
     <DashboardShell>
-      <div className="p-4 sm:p-6">
-        <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+      <div className="terminal-boot p-4 sm:p-6">
+        <div className="mb-6 terminal-panel rounded p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <div className="text-sm text-zinc-500">Public profile monitoring</div>
-            <h1 className="mt-1 text-2xl font-semibold text-zinc-50">Account Integrity Dashboard</h1>
+            <div className="terminal-label text-xs">public profile monitoring</div>
+            <h1 className="mt-2 text-2xl font-semibold text-zinc-50">Account Integrity Dashboard</h1>
             <div className="mt-2 text-sm text-zinc-500">
               Latest refresh: {lastUpdated ? formatDate(lastUpdated) : '-'}
-              {refreshing && <span className="ml-2 text-zinc-300">Refreshing...</span>}
+              {refreshing && <span className="ml-2 text-emerald-200">Refreshing stream...</span>}
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <Link href="/clients" className="terminal-button-secondary focus-ring inline-flex items-center gap-2 rounded px-3 py-2 text-sm">
+              <TerminalIcon name="briefcase" className="h-4 w-4" />
+              Client intelligence
+            </Link>
             <button
               onClick={() => fetchDashboardData(false)}
               disabled={refreshing}
-              className="rounded border border-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:border-zinc-700 disabled:cursor-not-allowed disabled:opacity-60"
+              className="terminal-button-secondary focus-ring inline-flex items-center gap-2 rounded px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60"
             >
+              <TerminalIcon name="refresh" className="h-4 w-4" />
               Refresh
             </button>
             <button
@@ -652,10 +816,11 @@ export default function DashboardPage() {
                 await signOut()
                 router.push('/auth')
               }}
-              className="rounded border border-zinc-800 px-3 py-2 text-sm text-zinc-300 hover:border-zinc-700"
+              className="terminal-button-secondary focus-ring rounded px-3 py-2 text-sm"
             >
               Sign Out
             </button>
+          </div>
           </div>
         </div>
 
@@ -664,11 +829,62 @@ export default function DashboardPage() {
         )}
 
         <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <SnapshotCard title="Monitored" value={stats.monitored} caption={`${stats.total} total clients, ${stats.paused} paused`} />
-          <SnapshotCard title="Watch / Risk" value={stats.watchOrRisk} caption="Needs attention soon" tone={stats.watchOrRisk > 0 ? 'warn' : 'neutral'} />
-          <SnapshotCard title="Critical" value={stats.critical} caption="Highest priority accounts" tone={stats.critical > 0 ? 'bad' : 'neutral'} />
-          <SnapshotCard title="Live Snapshots" value={stats.liveSnapshots} caption="Updated in the last 2 hours" tone={stats.liveSnapshots > 0 ? 'good' : 'neutral'} />
+          <SnapshotCard icon="eye" title="Monitored" value={stats.monitored} caption={`${stats.total} total clients, ${stats.paused} paused`} />
+          <SnapshotCard icon="activity" title="Watch / Risk" value={stats.watchOrRisk} caption="Needs attention soon" tone={stats.watchOrRisk > 0 ? 'warn' : 'neutral'} />
+          <SnapshotCard icon="alert" title="Critical" value={stats.critical} caption="Highest priority accounts" tone={stats.critical > 0 ? 'bad' : 'neutral'} />
+          <SnapshotCard icon="database" title="Live Snapshots" value={stats.liveSnapshots} caption="Updated in the last 2 hours" tone={stats.liveSnapshots > 0 ? 'good' : 'neutral'} />
         </div>
+
+        <section className="mb-6">
+          <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="text-lg font-medium text-zinc-100">Agency Operating Queue</h2>
+              <div className="text-sm text-zinc-500">The fastest route to what matters today.</div>
+            </div>
+            <div className="terminal-chip rounded px-3 py-2 text-sm">Snapshot-driven</div>
+          </div>
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
+            <Link href={agencyQueue[0].href} className="terminal-panel group rounded p-5 transition hover:border-emerald-300/30">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="terminal-label text-xs">{agencyQueue[0].title}</div>
+                  <div className="mt-3 flex items-end gap-3">
+                    <div className={`text-5xl font-semibold leading-none ${agencyQueue[0].tone}`}>{agencyQueue[0].value}</div>
+                    <div className="pb-1 text-sm text-zinc-500">accounts</div>
+                  </div>
+                </div>
+                <div className="flex h-11 w-11 items-center justify-center rounded border border-emerald-300/20 bg-black/30 text-emerald-200">
+                  <TerminalIcon name={agencyQueue[0].icon} className="h-5 w-5" />
+                </div>
+              </div>
+              <p className="mt-5 text-lg font-medium text-zinc-100">{agencyQueue[0].detail}</p>
+              <div className="mt-5 inline-flex items-center gap-1 text-sm font-medium text-zinc-300 group-hover:text-emerald-200">
+                {agencyQueue[0].action}
+                <TerminalIcon name="arrowRight" className="h-4 w-4" />
+              </div>
+            </Link>
+
+            <div className="grid grid-cols-1 gap-3">
+              {agencyQueue.slice(1).map((item) => (
+                <Link key={item.title} href={item.href} className="terminal-card group flex items-center justify-between gap-4 rounded p-4 transition hover:border-emerald-300/30">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded border border-zinc-700 bg-black/30 text-zinc-300 transition group-hover:border-emerald-300/30 group-hover:text-emerald-200">
+                      <TerminalIcon name={item.icon} className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <div className="text-sm font-medium text-zinc-100">{item.title}</div>
+                        <div className={`text-sm font-semibold ${item.tone}`}>{item.value}</div>
+                      </div>
+                      <div className="mt-1 truncate text-xs text-zinc-500">{item.detail}</div>
+                    </div>
+                  </div>
+                  <TerminalIcon name="arrowRight" className="h-4 w-4 shrink-0 text-zinc-600 group-hover:text-emerald-200" />
+                </Link>
+              ))}
+            </div>
+          </div>
+        </section>
 
         <section>
           <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -676,7 +892,7 @@ export default function DashboardPage() {
               <h2 className="text-lg font-medium text-zinc-100">Client Profiles</h2>
               <div className="text-sm text-zinc-500">Profile health, audience movement, and snapshot-derived signals.</div>
             </div>
-            <div className="rounded border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-400">
+            <div className="terminal-chip rounded px-3 py-2 text-sm">
               Peak score {stats.highestScore}
             </div>
           </div>
@@ -692,9 +908,12 @@ export default function DashboardPage() {
         </section>
 
         <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
-          <section className="rounded border border-zinc-800 bg-zinc-900">
+          <section className="terminal-card rounded">
             <div className="border-b border-zinc-800 px-4 py-3">
-              <h3 className="text-sm font-medium text-zinc-100">Risk Timeline</h3>
+              <h3 className="flex items-center gap-2 text-sm font-medium text-zinc-100">
+                <TerminalIcon name="chart" className="h-4 w-4 text-emerald-200" />
+                Risk Timeline
+              </h3>
             </div>
 
             {riskHistory.length === 0 ? (

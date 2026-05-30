@@ -5,6 +5,9 @@ import { computeRiskScoreFromSnapshot, computeDerivedMetricsFromHistory } from '
 import apiUtils from '../../../lib/apiUtils'
 import logger from '../../../lib/logger'
 import { allowRequest } from '../../../lib/rateLimiter'
+import { verifyIngestToken } from '../../../lib/ingestAuth'
+import { notifyRiskStateChange } from '../../../lib/notifications'
+import { requireUserAccess } from '../../../lib/accessControl'
 
 type Incoming = {
   client_id: string
@@ -46,11 +49,12 @@ export async function POST(req: Request) {
   if (!v.ok) return NextResponse.json(apiUtils.errorPayload(v.error), { status: 400, headers: apiUtils.CORS_HEADERS })
 
   const incoming: Incoming = body
+  const ingestToken = req.headers.get('x-banshi-ingest-token') || body?.ingest_token || null
 
   // Simple per-client rate limiting to protect DB from accidental floods
   try {
     const key = `client:${incoming.client_id}`
-    if (!allowRequest(key, Number(process.env.PROFILE_SNAPSHOT_MAX_PER_MIN || 120), 60 * 1000)) {
+    if (!(await allowRequest(key, Number(process.env.PROFILE_SNAPSHOT_MAX_PER_MIN || 120), 60 * 1000))) {
       logger.warn('rate limit exceeded for', key)
       return NextResponse.json(apiUtils.errorPayload('rate limit exceeded'), { status: 429, headers: apiUtils.CORS_HEADERS })
     }
@@ -71,15 +75,26 @@ export async function POST(req: Request) {
     const admin = apiUtils.makeAdminClient()
     const db = admin ?? supabase
 
-    // Ensure client exists and respect dashboard/extension monitoring state.
+    // Ensure client exists, authenticate the extension, and respect monitoring state.
     let clientRow: any = null
     let clientErr: any = null
-    const clientRes = await db.from('clients').select('user_id, monitoring_enabled').eq('id', event.client_id).maybeSingle()
+    const clientRes = await db
+      .from('clients')
+      .select('user_id, name, platform, account_id, monitoring_enabled, ingest_token_hash')
+      .eq('id', event.client_id)
+      .maybeSingle()
     clientRow = clientRes.data
     clientErr = clientRes.error
 
+    if (clientErr && String(clientErr.message || '').includes('ingest_token_hash')) {
+      return NextResponse.json(
+        apiUtils.errorPayload('Ingest token columns missing. Run sql/004_add_ingest_tokens.sql.', 'ingest_token_schema_missing'),
+        { status: 500, headers: apiUtils.CORS_HEADERS },
+      )
+    }
+
     if (clientErr && String(clientErr.message || '').includes('monitoring_enabled')) {
-      const fallbackRes = await db.from('clients').select('user_id').eq('id', event.client_id).maybeSingle()
+      const fallbackRes = await db.from('clients').select('user_id, name, platform, account_id, ingest_token_hash').eq('id', event.client_id).maybeSingle()
       clientRow = fallbackRes.data
       clientErr = fallbackRes.error
     }
@@ -91,6 +106,20 @@ export async function POST(req: Request) {
     if (!clientRow) {
       return NextResponse.json(apiUtils.errorPayload('Client not found'), { status: 400, headers: apiUtils.CORS_HEADERS })
     }
+    if (!clientRow.ingest_token_hash) {
+      return NextResponse.json(
+        apiUtils.errorPayload('Client missing ingest token. Re-link this profile from the extension.', 'missing_ingest_token'),
+        { status: 401, headers: apiUtils.CORS_HEADERS },
+      )
+    }
+    if (!verifyIngestToken(ingestToken, clientRow.ingest_token_hash)) {
+      return NextResponse.json(
+        apiUtils.errorPayload('Invalid ingest token', 'invalid_ingest_token'),
+        { status: 401, headers: apiUtils.CORS_HEADERS },
+      )
+    }
+    const access = await requireUserAccess(admin ?? db, clientRow.user_id)
+    if (!access.ok) return access.response
     if (clientRow.monitoring_enabled === false) {
       return NextResponse.json(apiUtils.okPayload({ skipped: true, reason: 'monitoring_disabled' }), { status: 200, headers: apiUtils.CORS_HEADERS })
     }
@@ -136,7 +165,10 @@ export async function POST(req: Request) {
 
     // Update client's last_checked timestamp regardless of whether event insert succeeded
     try {
-      await db.from('clients').update({ last_checked: event.created_at }).eq('id', event.client_id)
+      await db.from('clients').update({
+        last_checked: event.created_at,
+        ingest_token_last_used_at: event.created_at,
+      }).eq('id', event.client_id)
     } catch (e) {
       logger.warn('failed to update clients.last_checked', e)
     }
@@ -220,6 +252,21 @@ export async function POST(req: Request) {
         // ignore
       }
 
+      let previousRisk: any = null
+      try {
+        const previousRiskRes = await db
+          .from('risk_history')
+          .select('id, score, level, created_at')
+          .eq('client_id', event.client_id)
+          .not('event_id', 'is', null)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        previousRisk = previousRiskRes.data ?? null
+      } catch (e) {
+        previousRisk = null
+      }
+
       const scoreRes = computeRiskScoreFromSnapshot({ currentEvent: evData, previousEvent: prevEvent, alerts: recentAlerts })
       try {
         await db.from('risk_status').upsert({ client_id: event.client_id, status: scoreRes.level, score: scoreRes.score, notes: scoreRes.reason }, { onConflict: 'client_id' })
@@ -228,17 +275,42 @@ export async function POST(req: Request) {
       }
 
       // Append to risk_history for auditing/trends (best-effort)
+      let riskHistoryRow: any = null
       try {
-        await db.from('risk_history').insert({
+        const riskHistoryRes = await db.from('risk_history').insert({
           client_id: event.client_id,
           event_id: evData.id,
           score: scoreRes.score,
           level: scoreRes.level,
           notes: scoreRes.reason,
           payload: { derived, previous_event_id: prevEvent ? prevEvent.id : null }
-        })
+        }).select('id, created_at').single()
+        riskHistoryRow = riskHistoryRes.data ?? null
+        if (riskHistoryRes.error) logger.warn('failed to insert risk_history', riskHistoryRes.error)
       } catch (e) {
         logger.warn('failed to insert risk_history', e)
+      }
+
+      try {
+        await notifyRiskStateChange({
+          db,
+          userId: clientRow.user_id,
+          clientId: event.client_id,
+          clientName: evData.metadata?.name || clientRow.name,
+          platform: clientRow.platform,
+          handle: evData.metadata?.handle || clientRow.account_id,
+          eventId: evData.id,
+          riskHistoryId: riskHistoryRow?.id ?? null,
+          level: scoreRes.level,
+          previousLevel: previousRisk?.level ?? null,
+          score: scoreRes.score,
+          previousScore: typeof previousRisk?.score === 'number' ? previousRisk.score : null,
+          reason: scoreRes.reason,
+          snapshotAt: evData.created_at,
+          metadata: evData.metadata,
+        })
+      } catch (e) {
+        logger.warn('risk notification failed', e)
       }
 
       // Kick off a best-effort background recompute (do not block response)

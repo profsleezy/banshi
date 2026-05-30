@@ -3,11 +3,18 @@ const STORAGE_API_KEY = 'banshi_api_base_url';
 const STORAGE_ENABLED_KEY = 'banshi_enabled';
 const STORAGE_SELECTED_CLIENT_KEY = 'banshi_selected_client_id';
 const STORAGE_MONITORED_KEY = 'banshi_monitored_clients';
+const STORAGE_INTERVAL_KEY = 'banshi_snapshot_interval_minutes';
 const DEFAULT_API_BASE = 'http://localhost:3000';
+const DEFAULT_SNAPSHOT_INTERVAL_MINUTES = 5;
+const SNAPSHOT_INTERVAL_OPTIONS = [1, 5, 15, 30];
 const IG_PROFILE_PATH_BLACKLIST = ['p', 'explore', 'stories', 'direct', 'accounts', 'a', 'reel', 'reels', 'tag', 'tv', 'about', 'developer', 'graphql'];
 
 function normalizeHandle(value) {
   return String(value || '').trim().replace(/^@/, '').toLowerCase();
+}
+
+function isValidInstagramHandle(value) {
+  return /^[a-z0-9._]{1,30}$/i.test(value) && !IG_PROFILE_PATH_BLACKLIST.includes(value);
 }
 
 function cleanDisplayName(value, handle) {
@@ -31,13 +38,19 @@ function cleanDisplayName(value, handle) {
   return related ? text : null;
 }
 
+function normalizeSnapshotInterval(value) {
+  const parsed = Number(value);
+  return SNAPSHOT_INTERVAL_OPTIONS.includes(parsed) ? parsed : DEFAULT_SNAPSHOT_INTERVAL_MINUTES;
+}
+
 function getInstagramHandleFromUrl(url) {
   try {
     const u = new URL(url);
+    if (!/(^|\.)instagram\.com$/i.test(u.hostname)) return '';
     const parts = u.pathname.split('/').filter(Boolean);
-    if (!parts.length) return '';
+    if (parts.length !== 1) return '';
     const first = normalizeHandle(parts[0]);
-    if (!first || IG_PROFILE_PATH_BLACKLIST.includes(first)) return '';
+    if (!isValidInstagramHandle(first)) return '';
     return first;
   } catch (e) {
     return '';
@@ -58,12 +71,13 @@ function setBadge(state) {
 
 function getStorageDefaults() {
   return new Promise((resolve) => {
-    chrome.storage.local.get([STORAGE_CLIENT_KEY, STORAGE_API_KEY, STORAGE_SELECTED_CLIENT_KEY, STORAGE_MONITORED_KEY], (res) => {
+    chrome.storage.local.get([STORAGE_CLIENT_KEY, STORAGE_API_KEY, STORAGE_SELECTED_CLIENT_KEY, STORAGE_MONITORED_KEY, STORAGE_INTERVAL_KEY], (res) => {
       const out = {};
       if (res && res[STORAGE_CLIENT_KEY]) out.client_id = res[STORAGE_CLIENT_KEY];
       if (res && res[STORAGE_API_KEY]) out.api_base = res[STORAGE_API_KEY];
       if (res && res[STORAGE_SELECTED_CLIENT_KEY]) out.selected_client = res[STORAGE_SELECTED_CLIENT_KEY];
       if (res && res[STORAGE_MONITORED_KEY]) out.monitored = res[STORAGE_MONITORED_KEY];
+      out.snapshot_interval_minutes = normalizeSnapshotInterval(res && res[STORAGE_INTERVAL_KEY]);
       resolve(out);
     });
   });
@@ -71,7 +85,7 @@ function getStorageDefaults() {
 
 function ensureDefaults() {
   return new Promise((resolve) => {
-    chrome.storage.local.get([STORAGE_CLIENT_KEY, STORAGE_API_KEY, STORAGE_MONITORED_KEY], (res) => {
+    chrome.storage.local.get([STORAGE_CLIENT_KEY, STORAGE_API_KEY, STORAGE_ENABLED_KEY, STORAGE_MONITORED_KEY, STORAGE_INTERVAL_KEY], (res) => {
       const toSet = {};
       if (!res || !res[STORAGE_CLIENT_KEY]) {
         const id = (crypto && crypto.randomUUID) ? crypto.randomUUID() : ('c_' + Math.random().toString(36).slice(2, 10));
@@ -87,6 +101,9 @@ function ensureDefaults() {
       if (!res || !res[STORAGE_MONITORED_KEY]) {
         toSet[STORAGE_MONITORED_KEY] = {};
       }
+      if (!res || !SNAPSHOT_INTERVAL_OPTIONS.includes(Number(res[STORAGE_INTERVAL_KEY]))) {
+        toSet[STORAGE_INTERVAL_KEY] = DEFAULT_SNAPSHOT_INTERVAL_MINUTES;
+      }
       if (Object.keys(toSet).length === 0) return resolve();
       chrome.storage.local.set(toSet, () => resolve());
     });
@@ -95,15 +112,41 @@ function ensureDefaults() {
 
 function getStoredValues() {
   return new Promise((resolve) => {
-    chrome.storage.local.get([STORAGE_CLIENT_KEY, STORAGE_API_KEY, STORAGE_SELECTED_CLIENT_KEY, STORAGE_MONITORED_KEY], (res) => {
+    chrome.storage.local.get([STORAGE_CLIENT_KEY, STORAGE_API_KEY, STORAGE_SELECTED_CLIENT_KEY, STORAGE_MONITORED_KEY, STORAGE_INTERVAL_KEY], (res) => {
       resolve({
         client_id: res && res[STORAGE_CLIENT_KEY] ? res[STORAGE_CLIENT_KEY] : null,
         api_base: res && res[STORAGE_API_KEY] ? res[STORAGE_API_KEY] : DEFAULT_API_BASE,
         selected_client: res && res[STORAGE_SELECTED_CLIENT_KEY] ? res[STORAGE_SELECTED_CLIENT_KEY] : null,
-        monitored: res && res[STORAGE_MONITORED_KEY] ? res[STORAGE_MONITORED_KEY] : {}
+        monitored: res && res[STORAGE_MONITORED_KEY] ? res[STORAGE_MONITORED_KEY] : {},
+        snapshot_interval_minutes: normalizeSnapshotInterval(res && res[STORAGE_INTERVAL_KEY])
       });
     });
   });
+}
+
+function scheduleSnapshotAlarm(minutes) {
+  const interval = normalizeSnapshotInterval(minutes);
+  return new Promise((resolve) => {
+    try {
+      chrome.alarms.clear('banshi_snapshot', () => {
+        try {
+          chrome.alarms.create('banshi_snapshot', { periodInMinutes: interval });
+          console.log('Scheduled Banshi snapshots every', interval, 'minute(s)');
+        } catch (e) {
+          console.warn('scheduleSnapshotAlarm: create failed', e);
+        }
+        resolve(interval);
+      });
+    } catch (e) {
+      console.warn('scheduleSnapshotAlarm failed', e);
+      resolve(interval);
+    }
+  });
+}
+
+async function scheduleStoredSnapshotAlarm() {
+  const vals = await getStoredValues();
+  return scheduleSnapshotAlarm(vals.snapshot_interval_minutes);
 }
 
 function removeMonitoredHandle(handle, reason) {
@@ -115,6 +158,24 @@ function removeMonitoredHandle(handle, reason) {
     chrome.storage.local.set({ [STORAGE_MONITORED_KEY]: m }, () => {
       console.log('Removed monitored client', handle, reason || '');
       if (Object.keys(m).length === 0) setBadge('');
+    });
+  });
+}
+
+function markMonitoredNeedsRelink(handle, reason) {
+  if (!handle) return;
+  chrome.storage.local.get([STORAGE_MONITORED_KEY], (r) => {
+    const m = r && r[STORAGE_MONITORED_KEY] ? r[STORAGE_MONITORED_KEY] : {};
+    if (!m[handle]) return;
+    m[handle] = Object.assign({}, m[handle], {
+      ingest_token: null,
+      token_created_at: null,
+      auth_error: reason || 'secure sync required',
+      auth_error_at: new Date().toISOString()
+    });
+    chrome.storage.local.set({ [STORAGE_MONITORED_KEY]: m }, () => {
+      console.warn('Marked monitored client for secure re-link', handle, reason || '');
+      setBadge('ERR');
     });
   });
 }
@@ -220,6 +281,12 @@ async function performSnapshots() {
 
         const monitoredEntry = monitored[handle];
         if (!monitoredEntry) continue; // double-check safety
+        const ingestToken = monitoredEntry.ingest_token;
+        if (!ingestToken) {
+          hadActionableFailure = true;
+          console.warn('performSnapshots: monitored client is missing ingest token; re-link required', handle);
+          continue;
+        }
 
         const payload = {
           client_id: monitoredEntry.client_id,
@@ -246,7 +313,10 @@ async function performSnapshots() {
           postAttempts += 1;
           const res = await fetch((api_base || DEFAULT_API_BASE) + '/api/events', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Banshi-Ingest-Token': ingestToken
+            },
             body: JSON.stringify(payload)
           });
           let body = null
@@ -260,6 +330,11 @@ async function performSnapshots() {
           if (res && body && body.error === 'Client not found') {
             disabledSkips += 1;
             removeMonitoredHandle(handle, 'after missing client response');
+            continue;
+          }
+          if (res && res.status === 401 && body && (body.code === 'invalid_ingest_token' || body.code === 'missing_ingest_token')) {
+            hadActionableFailure = true;
+            markMonitoredNeedsRelink(handle, body.code);
             continue;
           }
           if (res && res.ok && body && body.success) {
@@ -299,14 +374,14 @@ async function performSnapshots() {
 chrome.runtime.onInstalled.addListener(async () => {
   await ensureDefaults();
   // ensure alarm exists and run an initial snapshot
-  try { chrome.alarms.create('banshi_snapshot', { periodInMinutes: 1 }); } catch (e) {}
+  await scheduleStoredSnapshotAlarm();
   performSnapshots();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await ensureDefaults();
   // ensure alarm exists and resume snapshotting
-  try { chrome.alarms.create('banshi_snapshot', { periodInMinutes: 1 }); } catch (e) {}
+  await scheduleStoredSnapshotAlarm();
   performSnapshots();
 });
 
@@ -325,6 +400,11 @@ chrome.action.onClicked.addListener(async (tab) => {
   try {
     if (!tab || !tab.id || !tab.url) return
     const isIg = /https?:\/\/(www\.)?instagram\.com\//i.test(tab.url)
+    const urlHandle = getInstagramHandleFromUrl(tab.url)
+    if (!isIg || !urlHandle) {
+      console.warn('action.onClicked: active tab is not an Instagram profile page')
+      return
+    }
     let profileData = null
     if (isIg) {
       try {
@@ -336,7 +416,6 @@ chrome.action.onClicked.addListener(async (tab) => {
 
     const vals = await getStoredValues()
     const base = vals.api_base || DEFAULT_API_BASE
-    const urlHandle = getInstagramHandleFromUrl(tab.url)
     const linkHandle = urlHandle || normalizeHandle(profileData && profileData.handle)
     const bio = profileData && typeof profileData.bio === 'string' ? profileData.bio.trim() : ''
     const params = new URLSearchParams()
@@ -349,7 +428,7 @@ chrome.action.onClicked.addListener(async (tab) => {
 
     // enable harvesting
     chrome.storage.local.set({ [STORAGE_ENABLED_KEY]: true }, () => {
-      try { chrome.alarms.create('banshi_snapshot', { periodInMinutes: 1 }); } catch (e) {}
+      scheduleStoredSnapshotAlarm();
       performSnapshots();
     })
   } catch (e) {
@@ -364,8 +443,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     const u = new URL(changeInfo.url)
     if (u.pathname === '/extension/linked') {
       const cid = u.searchParams.get('client_id')
-      const handle = u.searchParams.get('handle')
+      const handle = normalizeHandle(u.searchParams.get('handle'))
       const name = u.searchParams.get('name')
+      const hashParams = new URLSearchParams((u.hash || '').replace(/^#/, ''))
+      const ingestToken = hashParams.get('ingest_token')
+      const tokenCreatedAt = hashParams.get('token_created_at')
       if (cid) {
         chrome.storage.local.set({ [STORAGE_SELECTED_CLIENT_KEY]: cid }, () => {
           console.log('Stored selected client id from linked page', cid)
@@ -374,7 +456,15 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
           // add to monitored mapping
           chrome.storage.local.get([STORAGE_MONITORED_KEY], (res) => {
             const m = (res && res[STORAGE_MONITORED_KEY]) ? res[STORAGE_MONITORED_KEY] : {};
-            m[handle.toLowerCase()] = { client_id: cid, name: name || null };
+            const existing = m[handle] || {};
+            m[handle] = {
+              client_id: cid,
+              name: name || existing.name || null,
+              ingest_token: ingestToken || existing.ingest_token || null,
+              token_created_at: tokenCreatedAt || existing.token_created_at || null,
+              auth_error: null,
+              auth_error_at: null
+            };
             chrome.storage.local.set({ [STORAGE_MONITORED_KEY]: m }, () => {
               console.log('Added monitored client', handle, cid)
             })
@@ -427,13 +517,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tab = tabs && tabs[0]
       if (!tab || !tab.id || !tab.url) return sendResponse({ ok: false })
       const isIg = /https?:\/\/(www\.)?instagram\.com\//i.test(tab.url)
+      const urlHandle = getInstagramHandleFromUrl(tab.url)
+      if (!isIg || !urlHandle) return sendResponse({ ok: false, reason: 'not_instagram_profile' })
       let profileData = null
       if (isIg) {
         try { profileData = await safeSendMessageToTab(tab.id, { type: 'COLLECT_PROFILE', include_engagement: true }) } catch (e) { console.warn('OPEN_LINK: collect failed', e) }
       }
       const vals = await getStoredValues()
       const base = vals.api_base || DEFAULT_API_BASE
-      const urlHandle = getInstagramHandleFromUrl(tab.url)
       const linkHandle = urlHandle || normalizeHandle(profileData && profileData.handle)
       const bio = profileData && typeof profileData.bio === 'string' ? profileData.bio.trim() : ''
       const params = new URLSearchParams()
@@ -446,7 +537,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       // enable harvesting
       chrome.storage.local.set({ [STORAGE_ENABLED_KEY]: true }, () => {
-        try { chrome.alarms.create('banshi_snapshot', { periodInMinutes: 1 }); } catch (e) {}
+        scheduleStoredSnapshotAlarm();
         performSnapshots();
       })
       sendResponse({ ok: true })
@@ -456,6 +547,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'SET_API_BASE') {
     const url = message.api_base;
     chrome.storage.local.set({ [STORAGE_API_KEY]: url }, () => sendResponse({ ok: true }));
+    return true;
+  }
+  if (message.type === 'SET_SNAPSHOT_INTERVAL') {
+    const interval = normalizeSnapshotInterval(message.minutes);
+    chrome.storage.local.set({ [STORAGE_INTERVAL_KEY]: interval }, async () => {
+      await scheduleSnapshotAlarm(interval);
+      sendResponse({ ok: true, minutes: interval });
+    });
     return true;
   }
 });

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import DashboardShell from '../../../components/DashboardShell'
+import TerminalIcon from '../../../components/TerminalIcon'
 import { setClientMonitoring } from '../../../lib/clients'
 
 export default function LinkedPage() {
@@ -11,6 +12,7 @@ export default function LinkedPage() {
   const handle = params.get('handle')
   const existed = params.get('existed') === '1'
   const [status, setStatus] = useState<'syncing' | 'ready' | 'error'>('syncing')
+  const [closeBlocked, setCloseBlocked] = useState(false)
 
   useEffect(() => {
     let mounted = true
@@ -32,12 +34,32 @@ export default function LinkedPage() {
     }
   }, [clientId])
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (window.location.hash.includes('ingest_token')) {
+        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+      }
+    }, 1500)
+
+    return () => window.clearTimeout(timer)
+  }, [])
+
+  function handleCloseTab() {
+    setCloseBlocked(false)
+    window.open('', '_self')
+    window.close()
+    window.setTimeout(() => {
+      setCloseBlocked(true)
+    }, 250)
+  }
+
   return (
     <DashboardShell>
-      <div className="p-6">
-        <div className="max-w-xl rounded border border-zinc-800 bg-zinc-900 p-5">
-          <div className="text-xs uppercase tracking-wide text-zinc-500">Extension Link</div>
-          <h1 className="mt-2 text-xl font-semibold text-zinc-100">
+      <div className="terminal-boot p-6">
+        <div className="terminal-panel max-w-xl rounded p-5">
+          <div className="terminal-label text-xs">Extension Link</div>
+          <h1 className="mt-2 flex items-center gap-2 text-xl font-semibold text-zinc-100">
+            <TerminalIcon name={status === 'error' ? 'alert' : status === 'ready' ? 'check' : 'refresh'} className="h-5 w-5 text-emerald-200" />
             {status === 'ready' ? 'Monitoring Started' : status === 'error' ? 'Needs Attention' : 'Finishing Setup'}
           </h1>
 
@@ -52,17 +74,27 @@ export default function LinkedPage() {
 
           {existed && <p className="mt-3 text-sm text-amber-200">This profile already existed, so monitoring was re-enabled instead of creating a duplicate.</p>}
 
+          <div className="mt-4 rounded border border-zinc-800 bg-zinc-950/70 p-3 text-sm leading-6 text-zinc-400">
+            For live snapshots, keep the Instagram profile tab open in Chrome. It can stay in the background; this setup tab is only for confirming the link.
+          </div>
+
+          {closeBlocked && (
+            <div className="mt-4 rounded border border-zinc-800 bg-zinc-950/70 p-3 text-sm text-zinc-400">
+              Chrome blocked automatic tab closing. You can close this setup tab manually.
+            </div>
+          )}
+
           <div className="mt-5 flex flex-col gap-2 sm:flex-row">
-            <a href="/dashboard" className="inline-flex flex-1 justify-center rounded border border-emerald-500/30 px-3 py-2 text-sm font-medium text-emerald-200 hover:bg-emerald-500/10">
+            <a href="/dashboard" className="terminal-button inline-flex flex-1 justify-center rounded px-3 py-2 text-sm font-medium">
               Open Dashboard
             </a>
             <button
               type="button"
               disabled={status === 'syncing'}
-              onClick={() => window.close()}
-              className="inline-flex flex-1 justify-center rounded border border-zinc-800 px-3 py-2 text-sm text-zinc-300 hover:border-zinc-700 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={handleCloseTab}
+              className="terminal-button-secondary inline-flex flex-1 justify-center rounded px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {status === 'syncing' ? 'Syncing...' : 'Close Tab'}
+              {status === 'syncing' ? 'Syncing...' : 'Close Setup Tab'}
             </button>
           </div>
         </div>

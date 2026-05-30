@@ -1,9 +1,15 @@
 import { NextResponse } from 'next/server'
-import supabase from '../../../../../lib/supabase'
 import apiUtils from '../../../../../lib/apiUtils'
 import logger from '../../../../../lib/logger'
 import { createClient } from '@supabase/supabase-js'
 import { allowRequest } from '../../../../../lib/rateLimiter'
+import { requireUserAccess } from '../../../../../lib/accessControl'
+
+function getBearerToken(req: Request) {
+  const header = req.headers.get('authorization') || ''
+  const match = header.match(/^Bearer\s+(.+)$/i)
+  return match ? match[1] : null
+}
 
 export async function GET(req: Request, { params }: { params: { client_id: string } }) {
   const clientId = params && params.client_id ? params.client_id : null
@@ -17,20 +23,65 @@ export async function GET(req: Request, { params }: { params: { client_id: strin
   const since = url.searchParams.get('since')
   const until = url.searchParams.get('until')
 
-  const limit = Math.min(1000, Math.max(1, Number(limitParam || 200)))
-  const page = Math.max(0, Number(pageParam || 0))
+  const parsedLimit = Number(limitParam ?? 200)
+  const parsedPage = Number(pageParam ?? 0)
+  const limit = Number.isFinite(parsedLimit) ? Math.min(1000, Math.max(1, Math.floor(parsedLimit))) : 200
+  const page = Number.isFinite(parsedPage) ? Math.max(0, Math.floor(parsedPage)) : 0
   const asc = orderParam === 'asc'
   const start = page * limit
   const end = start + limit - 1
 
   try {
+    const token = getBearerToken(req)
+    if (!token) {
+      return NextResponse.json(apiUtils.errorPayload('Missing authorization token'), { status: 401, headers: apiUtils.CORS_HEADERS })
+    }
+
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? ''
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return NextResponse.json(apiUtils.errorPayload('Supabase env vars missing'), { status: 500, headers: apiUtils.CORS_HEADERS })
+    }
+
+    const authClient = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { Authorization: `Bearer ${token}` } },
+    })
+
+    const { data: userData, error: userError } = await authClient.auth.getUser(token)
+    const user = userData?.user
+    if (userError || !user) {
+      return NextResponse.json(apiUtils.errorPayload('Unauthorized'), { status: 401, headers: apiUtils.CORS_HEADERS })
+    }
+
     const admin = apiUtils.makeAdminClient()
-    const db = admin ?? supabase
+    const db = admin ?? authClient
+    const access = await requireUserAccess(admin ?? db, user.id)
+    if (!access.ok) return access.response
+
+    const { data: clientRow, error: clientError } = await db
+      .from('clients')
+      .select('id, user_id')
+      .eq('id', clientId)
+      .maybeSingle()
+
+    if (clientError) {
+      logger.warn('snapshots client lookup failed', clientError)
+      return NextResponse.json(apiUtils.errorPayload('Client lookup failed'), { status: 500, headers: apiUtils.CORS_HEADERS })
+    }
+
+    if (!clientRow) {
+      return NextResponse.json(apiUtils.errorPayload('Client not found'), { status: 404, headers: apiUtils.CORS_HEADERS })
+    }
+
+    if (clientRow.user_id !== user.id) {
+      return NextResponse.json(apiUtils.errorPayload('Forbidden'), { status: 403, headers: apiUtils.CORS_HEADERS })
+    }
 
     // lightweight rate limiting on reads to protect the DB from abusive clients
     try {
-      const key = `snapshots:client:${clientId}`
-      if (!allowRequest(key, Number(process.env.SNAPSHOTS_MAX_PER_MIN || 60), 60 * 1000)) {
+      const key = `snapshots:user:${user.id}:client:${clientId}`
+      if (!(await allowRequest(key, Number(process.env.SNAPSHOTS_MAX_PER_MIN || 60), 60 * 1000))) {
         logger.warn('snapshots GET rate limit', key)
         return NextResponse.json(apiUtils.errorPayload('rate limit exceeded'), { status: 429, headers: apiUtils.CORS_HEADERS })
       }

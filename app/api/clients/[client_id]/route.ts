@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import apiUtils from '../../../../lib/apiUtils'
 import logger from '../../../../lib/logger'
+import { requireUserAccess } from '../../../../lib/accessControl'
 
 type AuthorizedClientContext = {
   response?: NextResponse
@@ -9,6 +10,8 @@ type AuthorizedClientContext = {
   user?: any
   clientRow?: any
 }
+
+const CLIENT_SELECT = 'id, user_id, name, platform, account_id, notes, latest_snapshot_metadata, monitoring_enabled, monitoring_updated_at, created_at, updated_at, last_checked'
 
 function getBearerToken(req: Request) {
   const header = req.headers.get('authorization') || ''
@@ -56,6 +59,12 @@ async function getAuthorizedClientContext(req: Request, clientId: string): Promi
 
   const admin = apiUtils.makeAdminClient()
   const db = admin ?? authClient
+  const access = await requireUserAccess(admin ?? db, user.id)
+  if (!access.ok) {
+    return {
+      response: access.response,
+    }
+  }
 
   const { data: clientRow, error: clientError } = await db
     .from('clients')
@@ -123,7 +132,7 @@ export async function PATCH(req: Request, { params }: { params: { client_id: str
       })
       .eq('id', clientId)
       .eq('user_id', context.user.id)
-      .select()
+      .select(CLIENT_SELECT)
       .single()
 
     if (error) {
@@ -152,10 +161,11 @@ export async function DELETE(req: Request, { params }: { params: { client_id: st
     if (context.response) return context.response
 
     const { db, user } = context
-    const childTables = ['alerts', 'risk_status', 'risk_history', 'events']
+    const childTables = ['client_investigation_logs', 'alerts', 'risk_status', 'risk_history', 'events']
     for (const table of childTables) {
       const { error } = await db.from(table).delete().eq('client_id', clientId)
       if (error) {
+        if (table === 'client_investigation_logs' && String(error.message || '').includes('does not exist')) continue
         logger.warn(`delete client child cleanup failed for ${table}`, error)
         return NextResponse.json(apiUtils.errorPayload(`Failed deleting ${table}`), { status: 500, headers: apiUtils.CORS_HEADERS })
       }

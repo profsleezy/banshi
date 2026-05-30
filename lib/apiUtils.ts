@@ -5,7 +5,7 @@ import logger from './logger'
 export const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Banshi-Ingest-Token',
 }
 
 let adminClient: SupabaseClient | null = null

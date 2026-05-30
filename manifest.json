@@ -10,7 +10,9 @@
     "scripting"
   ],
   "host_permissions": [
-    "*://*.instagram.com/*"
+    "*://*.instagram.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "background": {
     "service_worker": "background/service_worker.js"

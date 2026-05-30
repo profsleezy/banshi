@@ -8,7 +8,7 @@ High-level components
 
 - Chrome extension (MV3)
   - content_scripts/profile_collector.js: extracts visible profile fields (followers, following, posts, handle, bio, name, profile_picture_url, verified, is_private, external_link_present) using robust selectors and embedded JSON parsing.
-  - background/service_worker.js: orchestrates periodic snapshots (every ~60s), messages tabs safely, and POSTs PROFILE_SNAPSHOT events to the server.
+  - background/service_worker.js: orchestrates periodic snapshots (1, 5, 15, or 30 minutes; 5 minutes by default), messages tabs safely, and POSTs PROFILE_SNAPSHOT events to the server.
   - popup UI: shows connection status and monitored clients.
 
 - Server (Next.js, App Router)
@@ -17,12 +17,12 @@ High-level components
   - lib/riskEngine.ts: deterministic scoring + derived metrics functions. It computes both historical signals (7d/30d velocities, stability) and short-term live signals (live deltas, recent pct change, profile changes).
   - lib/updateRiskStatus.ts: helper to recompute risk based on alerts and upsert `risk_status` (now also writes `risk_history`).
   - lib/supabase.ts: ephemeral `anon` supabase client for user-facing server code.
-  - lib/apiUtils.ts, lib/logger.ts, lib/rateLimiter.ts: helpers added for CORS, admin client creation, logging, validation, and basic in-memory rate limiting.
+  - lib/apiUtils.ts, lib/logger.ts, lib/rateLimiter.ts, lib/notifications.ts: helpers added for CORS, admin client creation, logging, validation, Redis-backed rate limiting, and email/webhook alert delivery.
   - SQL migrations (sql/*.sql): create `events`, index on `(client_id, created_at DESC)`, `risk_status`, and `risk_history`.
 
 Data flow (simple human turns)
 
-1. Browser: The extension watches the currently visible Instagram profile page. Every minute (configurable), it collects a PROFILE_SNAPSHOT: a small JSON with `client_id`, `type: PROFILE_SNAPSHOT`, and `metadata` containing `followers`, `following`, `posts`, `bio`, `handle`, plus optional fields like `profile_picture_url`, `verified_badge`, `is_private`, and `external_link_present`.
+1. Browser: The extension watches open monitored Instagram profile tabs. On the configured interval (1, 5, 15, or 30 minutes; 5 minutes by default), it collects a PROFILE_SNAPSHOT: a small JSON with `client_id`, `type: PROFILE_SNAPSHOT`, and `metadata` containing `followers`, `following`, `posts`, `bio`, `handle`, plus optional fields like `profile_picture_url`, `verified_badge`, `is_private`, and `external_link_present`.
 
 2. Network: The background worker sends the snapshot to the server: POST /api/events. The request is validated by the server (sanity checks for expected fields), and a per-client rate limiter prevents accidental floods (best-effort, in-memory).
 

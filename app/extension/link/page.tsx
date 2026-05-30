@@ -1,13 +1,21 @@
 "use client"
 
 import { useEffect, useMemo, useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 import DashboardShell from '../../../components/DashboardShell'
+import TerminalIcon from '../../../components/TerminalIcon'
 import supabase from '../../../lib/supabase'
-import { createClient, setClientMonitoring, updateClient } from '../../../lib/clients'
+import { createClient, issueClientIngestToken, setClientMonitoring, updateClient } from '../../../lib/clients'
+import { PaywallPanel, useAccessStatus } from '../../../components/AccessGate'
+
+const IG_PROFILE_PATH_BLACKLIST = ['p', 'explore', 'stories', 'direct', 'accounts', 'a', 'reel', 'reels', 'tag', 'tv', 'about', 'developer', 'graphql']
 
 function normalizeHandle(value: string) {
   return value.trim().replace(/^@/, '').toLowerCase()
+}
+
+function isValidProfileHandle(value: string) {
+  return /^[a-z0-9._]{1,30}$/i.test(value) && !IG_PROFILE_PATH_BLACKLIST.includes(value)
 }
 
 function formatFollowers(value: number) {
@@ -17,13 +25,14 @@ function formatFollowers(value: number) {
 
 export default function ExtensionLinkPage() {
   const params = useSearchParams()
-  const router = useRouter()
+  const access = useAccessStatus()
   const [loading, setLoading] = useState(true)
   const [user, setUser] = useState<any>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const handle = useMemo(() => normalizeHandle(params.get('handle') ?? ''), [params])
+  const validHandle = isValidProfileHandle(handle)
   const followers = Number(params.get('followers') ?? 0)
   const bio = params.get('bio') ?? ''
 
@@ -45,7 +54,7 @@ export default function ExtensionLinkPage() {
   }, [])
 
   async function startMonitoring() {
-    if (!handle || submitting) return
+    if (!validHandle || submitting) return
 
     setSubmitting(true)
     setError(null)
@@ -75,22 +84,34 @@ export default function ExtensionLinkPage() {
         return
       }
 
+      const tokenRes = await issueClientIngestToken(client.id)
+      if (tokenRes.error || !tokenRes.data) {
+        setError((tokenRes.error as any)?.message ?? 'Could not create the secure extension token.')
+        return
+      }
+
       const qp = new URLSearchParams()
       qp.set('client_id', client.id)
       qp.set('handle', handle)
       qp.set('name', handle)
       if (res.existed) qp.set('existed', '1')
-      router.push(`/extension/linked?${qp.toString()}`)
+
+      const hash = new URLSearchParams()
+      hash.set('ingest_token', tokenRes.data.ingest_token)
+      hash.set('token_created_at', tokenRes.data.created_at)
+
+      // Force a real navigation so the Chrome extension reliably sees the tokenized URL.
+      window.location.assign(`/extension/linked?${qp.toString()}#${hash.toString()}`)
     } finally {
       setSubmitting(false)
     }
   }
 
-  if (loading) {
+  if (loading || access.loading) {
     return (
       <DashboardShell>
-        <div className="p-6">
-          <div className="max-w-xl rounded border border-zinc-800 bg-zinc-900 p-5 text-sm text-zinc-400">Checking your session...</div>
+        <div className="terminal-boot p-6">
+          <div className="terminal-card max-w-xl rounded p-5 text-sm text-zinc-400">Checking your session...</div>
         </div>
       </DashboardShell>
     )
@@ -99,11 +120,11 @@ export default function ExtensionLinkPage() {
   if (!user) {
     return (
       <DashboardShell>
-        <div className="p-6">
-          <div className="max-w-xl rounded border border-zinc-800 bg-zinc-900 p-5">
+        <div className="terminal-boot p-6">
+          <div className="terminal-card max-w-xl rounded p-5">
             <h1 className="text-lg font-semibold text-zinc-100">Sign In Required</h1>
             <p className="mt-2 text-sm text-zinc-400">Sign in before linking this Instagram profile to your dashboard.</p>
-            <a href="/auth" className="mt-5 inline-flex rounded border border-emerald-500/30 px-3 py-2 text-sm font-medium text-emerald-200 hover:bg-emerald-500/10">
+            <a href="/auth" className="terminal-button mt-5 inline-flex rounded px-3 py-2 text-sm font-medium">
               Sign In
             </a>
           </div>
@@ -112,20 +133,35 @@ export default function ExtensionLinkPage() {
     )
   }
 
+  if (!access.active) {
+    return (
+      <DashboardShell>
+        <PaywallPanel access={access.access} error={access.error} />
+      </DashboardShell>
+    )
+  }
+
   return (
     <DashboardShell>
-      <div className="p-6">
-        <div className="max-w-xl rounded border border-zinc-800 bg-zinc-900 p-5">
-          <div className="text-xs uppercase tracking-wide text-zinc-500">Extension Link</div>
-          <h1 className="mt-2 text-xl font-semibold text-zinc-100">Start Monitoring</h1>
+      <div className="terminal-boot p-6">
+        <div className="terminal-panel max-w-xl rounded p-5">
+          <div className="terminal-label text-xs">Extension Link</div>
+          <h1 className="mt-2 flex items-center gap-2 text-xl font-semibold text-zinc-100">
+            <TerminalIcon name="radar" className="h-5 w-5 text-emerald-200" />
+            Start Monitoring
+          </h1>
 
-          <div className="mt-5 rounded border border-zinc-800 bg-zinc-950 p-4">
+          <div className="mt-5 rounded border border-zinc-800 bg-black/30 p-4">
             <div className="text-xs text-zinc-500">Detected profile</div>
-            <div className="mt-1 text-lg font-semibold text-zinc-100">{handle ? `@${handle}` : 'No profile detected'}</div>
+            <div className="mt-1 text-lg font-semibold text-zinc-100">{validHandle ? `@${handle}` : 'No profile detected'}</div>
             <div className="mt-1 text-sm text-zinc-500">{formatFollowers(followers)} followers</div>
           </div>
 
-          {!handle && (
+          <div className="mt-4 rounded border border-zinc-800 bg-zinc-950/70 p-3 text-sm leading-6 text-zinc-400">
+            Live snapshots run from the Instagram profile tab opened in Chrome. Keep that profile tab open or in the background; this setup tab can be closed after monitoring starts.
+          </div>
+
+          {!validHandle && (
             <div className="mt-4 rounded border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
               Open an Instagram profile page, then use the extension again.
             </div>
@@ -137,14 +173,15 @@ export default function ExtensionLinkPage() {
 
           <button
             type="button"
-            disabled={!handle || submitting}
+            disabled={!validHandle || submitting}
             onClick={startMonitoring}
-            className="mt-5 w-full rounded border border-emerald-500/30 px-3 py-2 text-sm font-medium text-emerald-200 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+            className="terminal-button focus-ring mt-5 inline-flex w-full items-center justify-center gap-2 rounded px-3 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
           >
+            <TerminalIcon name={submitting ? 'refresh' : 'check'} className="h-4 w-4" />
             {submitting ? 'Creating client...' : 'Create Client and Monitor'}
           </button>
 
-          <a href="/dashboard" className="mt-3 inline-flex w-full justify-center rounded border border-zinc-800 px-3 py-2 text-sm text-zinc-300 hover:border-zinc-700">
+          <a href="/dashboard" className="terminal-button-secondary focus-ring mt-3 inline-flex w-full justify-center rounded px-3 py-2 text-sm">
             Back to Dashboard
           </a>
         </div>

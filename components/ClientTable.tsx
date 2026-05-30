@@ -1,5 +1,8 @@
 "use client"
 
+import Link from 'next/link'
+import TerminalIcon from './TerminalIcon'
+
 export type ClientRow = {
   id: string
   name: string
@@ -26,6 +29,10 @@ export type ClientRow = {
   profileStabilityScore?: number | null
   accountAgeConfidence?: number | null
   snapshotCount?: number | null
+  staleData?: boolean | null
+  staleHours?: number | null
+  banRiskReadinessScore?: number | null
+  banRiskReadinessLevel?: 'Ready' | 'Watch' | 'Exposed' | null
   usernameChangeDetected?: boolean | null
   externalLinkPresent?: boolean | null
   verifiedBadge?: boolean | null
@@ -89,7 +96,7 @@ function formatSigned(value?: number | null, suffix = '') {
 
 function Avatar({ client }: { client: ClientRow }) {
   return (
-    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border border-zinc-800 bg-zinc-950 text-lg font-semibold text-zinc-400">
+    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded border border-emerald-300/20 bg-emerald-300/10 text-lg font-semibold text-emerald-100">
       {(client.profileName || client.name || '?').slice(0, 1).toUpperCase()}
     </div>
   )
@@ -97,7 +104,7 @@ function Avatar({ client }: { client: ClientRow }) {
 
 function Stat({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return (
-    <div className="rounded border border-zinc-800 bg-zinc-950/60 px-4 py-3">
+    <div className="terminal-card-muted rounded px-4 py-3">
       <div className="text-xs text-zinc-500">{label}</div>
       <div className="mt-1 text-xl font-semibold text-zinc-50">{value}</div>
       {detail && <div className="mt-1 text-xs text-zinc-500">{detail}</div>}
@@ -118,6 +125,7 @@ function Signals({ client }: { client: ClientRow }) {
   const signals: Array<{ label: string; kind: 'good' | 'warn' | 'bad' | 'neutral' }> = []
 
   if (client.monitoringEnabled === false) signals.push({ label: 'Monitoring paused', kind: 'warn' })
+  else if (client.staleData) signals.push({ label: 'Scraper stale', kind: (client.staleHours ?? 0) > 24 ? 'bad' : 'warn' })
   if (client.externalLinkPresent) signals.push({ label: 'External link', kind: 'warn' })
   if (client.usernameChangeDetected) signals.push({ label: 'Username changed', kind: 'bad' })
   if (client.verifiedBadge) signals.push({ label: 'Verified', kind: 'good' })
@@ -148,7 +156,7 @@ export default function ClientTable({
 }: Props) {
   if (loading) {
     return (
-      <div className="rounded border border-zinc-800 bg-zinc-900 p-5">
+      <div className="terminal-card rounded p-5">
         <div className="animate-pulse space-y-4">
           <div className="h-6 w-1/4 rounded bg-zinc-800" />
           <div className="h-32 rounded bg-zinc-800" />
@@ -159,7 +167,7 @@ export default function ClientTable({
 
   if (clients.length === 0) {
     return (
-      <div className="rounded border border-dashed border-zinc-800 bg-zinc-900 p-10 text-center">
+      <div className="terminal-card rounded border-dashed p-10 text-center">
         <div className="text-sm font-medium text-zinc-200">No clients yet</div>
         <div className="mt-1 text-sm text-zinc-500">Add a client or link one from the extension to start collecting snapshots.</div>
       </div>
@@ -176,18 +184,21 @@ export default function ClientTable({
         const riskStatus = client.riskStatus ?? 'No score'
 
         return (
-          <article key={client.id} className={`rounded border bg-zinc-900 p-5 shadow-sm ${paused ? 'border-amber-500/30' : 'border-zinc-800'}`}>
+          <article key={client.id} className={`terminal-card terminal-boot rounded p-5 shadow-sm ${paused ? 'border-amber-500/30' : ''}`}>
             <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-start gap-4">
                   <Avatar client={client} />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="truncate text-xl font-semibold text-zinc-50">{client.profileName || client.name}</h3>
+                      <Link href={`/clients/${client.id}`} className="truncate text-xl font-semibold text-zinc-50 hover:text-emerald-200">
+                        {client.profileName || client.name}
+                      </Link>
                       <span className={`rounded border px-2.5 py-1 text-xs font-medium ${statusClass(client.riskStatus)}`}>
                         {riskStatus}{typeof client.riskScore === 'number' ? ` ${client.riskScore}` : ''}
                       </span>
-                      <span className={`rounded border px-2.5 py-1 text-xs font-medium ${paused ? signalClass('warn') : signalClass('good')}`}>
+                      <span className={`inline-flex items-center gap-1 rounded border px-2.5 py-1 text-xs font-medium ${paused ? signalClass('warn') : signalClass('good')}`}>
+                        <TerminalIcon name={paused ? 'alert' : 'eye'} className="h-3 w-3" />
                         {paused ? 'Paused' : 'Monitoring'}
                       </span>
                     </div>
@@ -208,24 +219,32 @@ export default function ClientTable({
                   <SmallMetric label="7d follower velocity" value={formatSigned(client.followerVelocity7d, '/day')} />
                   <SmallMetric label="30d follower change" value={formatSigned(client.followerPctChange30d, '%')} />
                   <SmallMetric label="Follow drift" value={formatSigned(client.followRatioDriftPct, '%')} />
-                  <SmallMetric label="Confidence" value={typeof client.accountAgeConfidence === 'number' ? `${Math.round(client.accountAgeConfidence * 100)}%` : '-'} />
+                  <SmallMetric label="Ban readiness" value={typeof client.banRiskReadinessScore === 'number' ? `${client.banRiskReadinessScore}/100` : '-'} />
                 </div>
               </div>
 
               <div className="w-full shrink-0 xl:w-72">
-                <div className="rounded border border-zinc-800 bg-zinc-950/50 p-4">
+                <div className="rounded border border-zinc-800 bg-black/30 p-4">
                   <div className="mb-3 text-xs font-medium uppercase tracking-wide text-zinc-500">Signals</div>
                   <Signals client={client} />
                   {client.riskReason && <div className="mt-4 text-xs leading-5 text-zinc-500">{client.riskReason}</div>}
                   {client.latestAlert && <div className="mt-4 text-xs leading-5 text-zinc-500">{client.latestAlert}</div>}
                 </div>
 
+                <Link
+                  href={`/clients/${client.id}`}
+                  className="terminal-button-secondary focus-ring mt-3 inline-flex w-full items-center justify-center gap-2 rounded px-3 py-2 text-sm font-medium"
+                >
+                  <TerminalIcon name="chart" className="h-4 w-4" />
+                  View Report
+                </Link>
+
                 {paused && onMonitorClient && (
                   <button
                     type="button"
                     disabled={monitoring || unmonitoring || removing}
                     onClick={() => onMonitorClient(client)}
-                    className="mt-3 w-full rounded border border-emerald-500/30 px-3 py-2 text-sm font-medium text-emerald-200 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="terminal-button focus-ring mt-3 w-full rounded px-3 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {monitoring ? 'Monitoring...' : 'Monitor'}
                   </button>
@@ -236,7 +255,7 @@ export default function ClientTable({
                     type="button"
                     disabled={monitoring || unmonitoring || removing}
                     onClick={() => onUnmonitorClient(client)}
-                    className="mt-3 w-full rounded border border-amber-500/30 px-3 py-2 text-sm font-medium text-amber-100 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="focus-ring mt-3 w-full rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-100 transition hover:border-amber-400/50 hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {unmonitoring ? 'Unmonitoring...' : 'Unmonitor'}
                   </button>
@@ -247,7 +266,7 @@ export default function ClientTable({
                     type="button"
                     disabled={removing || unmonitoring || monitoring}
                     onClick={() => onRemoveClient(client)}
-                    className="mt-3 w-full rounded border border-red-500/30 px-3 py-2 text-sm font-medium text-red-200 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="focus-ring mt-3 w-full rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm font-medium text-red-200 transition hover:border-red-400/50 hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {removing ? 'Removing...' : 'Remove Client'}
                   </button>

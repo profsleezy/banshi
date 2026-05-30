@@ -14,6 +14,9 @@ export interface Client {
   latest_snapshot_metadata?: Record<string, unknown> | null;
   monitoring_enabled?: boolean | null;
   monitoring_updated_at?: Timestamp | null;
+  ingest_token_hash?: string | null;
+  ingest_token_created_at?: Timestamp | null;
+  ingest_token_last_used_at?: Timestamp | null;
   created_at: Timestamp;
   updated_at: Timestamp;
   last_checked?: Timestamp | null;
