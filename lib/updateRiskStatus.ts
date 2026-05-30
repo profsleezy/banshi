@@ -9,7 +9,7 @@ type Result<T> = { data?: T; error?: Error }
 async function fetchAlertsForClient(clientId: string, db?: SupabaseClient): Promise<Result<Alert[]>> {
   const cli = db ?? supabase
   const { data, error } = await cli
-    .from<Alert>('alerts')
+    .from('alerts')
     .select('*')
     .eq('client_id', clientId)
 
@@ -27,7 +27,7 @@ async function upsertRiskStatus(clientId: string, status: RiskStatus['status'], 
   }
 
   const { data, error } = await cli
-    .from<RiskStatus>('risk_status')
+    .from('risk_status')
     .upsert(payload, { onConflict: 'client_id' })
     .select()
     .single()

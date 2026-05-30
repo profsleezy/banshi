@@ -40,7 +40,7 @@ export async function createAlert(payload: NewAlertPayload): Promise<Result<Aler
     acknowledged: false,
   }
 
-  const { data, error } = await supabase.from<Alert>('alerts').insert(insert).select().single()
+  const { data, error } = await supabase.from('alerts').insert(insert).select().single()
   if (error) return { error }
 
   // Update risk status for the client (best-effort)
@@ -63,7 +63,7 @@ export async function getAlertsByClient(clientId: string): Promise<Result<Alert[
   if (!clientIds.includes(clientId)) return { error: new Error('Unauthorized') }
 
   const { data, error } = await supabase
-    .from<Alert>('alerts')
+    .from('alerts')
     .select('*')
     .eq('client_id', clientId)
     .order('created_at', { ascending: false })
@@ -80,7 +80,7 @@ export async function getRecentAlerts(limit = 50): Promise<Result<Alert[]>> {
   if (clientIds.length === 0) return { data: [] }
 
   const { data, error } = await supabase
-    .from<Alert>('alerts')
+    .from('alerts')
     .select('*')
     .in('client_id', clientIds)
     .order('created_at', { ascending: false })
@@ -92,7 +92,7 @@ export async function getRecentAlerts(limit = 50): Promise<Result<Alert[]>> {
 
 export async function deleteAlert(alertId: string): Promise<Result<Alert>> {
   // fetch alert to determine client
-  const { data: found, error: fetchErr } = await supabase.from<Alert>('alerts').select('*').eq('id', alertId).single()
+  const { data: found, error: fetchErr } = await supabase.from('alerts').select('*').eq('id', alertId).single()
   if (fetchErr) return { error: fetchErr }
   if (!found) return { error: new Error('Alert not found') }
 
@@ -102,7 +102,7 @@ export async function deleteAlert(alertId: string): Promise<Result<Alert>> {
   const clientIds = (clientsRes.data ?? []).map(c => c.id)
   if (!clientIds.includes(found.client_id)) return { error: new Error('Unauthorized') }
 
-  const { data, error } = await supabase.from<Alert>('alerts').delete().eq('id', alertId).select().single()
+  const { data, error } = await supabase.from('alerts').delete().eq('id', alertId).select().single()
   if (error) return { error }
 
   // update risk status after deletion
