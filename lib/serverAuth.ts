@@ -7,7 +7,7 @@ export type ServerAuthContext = {
 }
 
 export type ServerAuthResult =
-  | { ok: true; context: ServerAuthContext }
+  | { ok: true; context: ServerAuthContext; status?: undefined; error?: undefined }
   | { ok: false; status: number; error: string }
 
 export function getBearerToken(req: Request) {
