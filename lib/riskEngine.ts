@@ -55,7 +55,7 @@ export function computeDerivedMetricsFromHistory(historyEvents: any[] = [], curr
     const currentVerified = cur && cur.metadata ? (typeof cur.metadata.verified_badge === 'boolean' ? cur.metadata.verified_badge : null) : null
     const currentIsPrivate = cur && cur.metadata ? (typeof cur.metadata.is_private === 'boolean' ? cur.metadata.is_private : null) : null
 
-    function findSnapshotAround(windowMs: number) {
+    const findSnapshotAround = (windowMs: number) => {
       const windowStart = nowTs - windowMs
       // latest <= windowStart
       for (let i = events.length - 1; i >= 0; i--) {
@@ -70,7 +70,7 @@ export function computeDerivedMetricsFromHistory(historyEvents: any[] = [], curr
       return null
     }
 
-    function computeVelocity(key: string, windowDays: number) {
+    const computeVelocity = (key: string, windowDays: number) => {
       if (!cur) return null
       const nowVal = getNum(cur, key)
       if (typeof nowVal !== 'number') return null
