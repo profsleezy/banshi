@@ -2,7 +2,7 @@ export type PublicSupportLink = {
   label: string
   href: string
   description: string
-  platform: 'telegram' | 'discord'
+  platform: 'telegram'
   mode: 'direct' | 'community'
 }
 
@@ -31,16 +31,9 @@ export function getPublicSupportLinks() {
       platform: 'telegram',
       mode: 'community',
     },
-    discordProfile: {
-      label: 'Discord',
-      href: process.env.NEXT_PUBLIC_SUPPORT_DISCORD_PROFILE || 'https://discord.com/users/000000000000000000',
-      description: 'Use Discord if that is where your team already lives.',
-      platform: 'discord',
-      mode: 'direct',
-    },
   } satisfies Record<string, PublicSupportLink>
 }
 
 export function getChromeExtensionUrl() {
-  return process.env.NEXT_PUBLIC_CHROME_EXTENSION_URL || 'https://chrome.google.com/webstore/detail/your-extension-id'
+  return process.env.NEXT_PUBLIC_CHROME_EXTENSION_URL || 'https://microsoftedge.microsoft.com/addons/detail/your-extension-id'
 }

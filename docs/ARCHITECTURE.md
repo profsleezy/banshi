@@ -2,11 +2,11 @@ Banshi Collector — Architecture & User Value Guide
 
 Overview
 
-Banshi Collector is a lightweight monitoring engine that captures periodic snapshots of Instagram profiles and computes deterministic risk signals. It is designed to run as a Chrome extension (client) that scrapes public profile data and a Next.js backend (server) that ingests, enriches, scores, and stores snapshots.
+Banshi Collector is a lightweight monitoring engine that captures periodic snapshots of Instagram profiles and computes deterministic risk signals. It is designed to run as an Edge/Chrome browser extension (client) that scrapes public profile data and a Next.js backend (server) that ingests, enriches, scores, and stores snapshots.
 
 High-level components
 
-- Chrome extension (MV3)
+- Edge/Chrome extension (MV3)
   - content_scripts/profile_collector.js: extracts visible profile fields (followers, following, posts, handle, bio, name, profile_picture_url, verified, is_private, external_link_present) using robust selectors and embedded JSON parsing.
   - background/service_worker.js: orchestrates periodic snapshots (1, 5, 15, or 30 minutes; 5 minutes by default), messages tabs safely, and POSTs PROFILE_SNAPSHOT events to the server.
   - popup UI: shows connection status and monitored clients.

@@ -8,7 +8,7 @@ import TerminalIcon from '../../../components/TerminalIcon'
 import { supabase } from '../../../lib/supabase'
 import { PaywallPanel, useAccessStatus } from '../../../components/AccessGate'
 
-const extensionUrl = process.env.NEXT_PUBLIC_CHROME_EXTENSION_URL || 'https://chrome.google.com/webstore/detail/your-extension-id'
+const extensionUrl = process.env.NEXT_PUBLIC_CHROME_EXTENSION_URL || 'https://microsoftedge.microsoft.com/addons/detail/your-extension-id'
 
 type Step = {
   title: string
@@ -45,8 +45,8 @@ export default function ExtensionOnboardingPage() {
   const steps = useMemo<Step[]>(
     () => [
       {
-        title: 'Install the Chrome extension',
-        copy: 'Use the extension link for production. During local development, load the unpacked extension from Chrome Extensions developer mode.',
+        title: 'Install the browser extension',
+        copy: 'Use the Edge Add-ons link for production. During local development, load the unpacked extension from the browser extensions page.',
         detail: 'The extension is what reads the currently open public Instagram profile page and links it to your Banshi workspace.',
         icon: 'shield',
       },
@@ -70,7 +70,7 @@ export default function ExtensionOnboardingPage() {
       },
       {
         title: 'Confirm the first snapshot',
-        copy: 'Keep the Instagram profile tab open or in the background so Chrome can keep the scraper context alive.',
+        copy: 'Keep the Instagram profile tab open or in the background so the browser can keep the scraper context alive.',
         detail: 'Then check the dashboard: the client card should show latest snapshot time, followers, posts, stability, and live signals.',
         icon: 'chart',
       },
@@ -176,7 +176,7 @@ export default function ExtensionOnboardingPage() {
             <div className="terminal-label text-xs">operator note</div>
             <h2 className="mt-2 text-xl font-semibold text-zinc-50">Keep the profile tab available</h2>
             <p className="mt-3 text-sm leading-6 text-zinc-400">
-              Snapshots come from open Instagram profile tabs. The tab can sit behind other work, but if Chrome closes or the tab navigates away, the extension cannot collect fresh profile data.
+              Snapshots come from open Instagram profile tabs. The tab can sit behind other work, but if the browser closes or the tab navigates away, the extension cannot collect fresh profile data.
             </p>
             <div className="terminal-divider my-5" />
             <div className="grid gap-2 text-sm">

@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "package:edge": "powershell -ExecutionPolicy Bypass -File scripts/package-edge-extension.ps1"
   },
   "dependencies": {
     "next": "14",

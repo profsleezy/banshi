@@ -7,14 +7,14 @@ This is the phased checklist for turning the current monitoring MVP into a safer
 - Add per-client ingest token columns.
 - Issue a token when a profile is linked or monitoring is re-enabled.
 - Store only the token hash in Supabase.
-- Store the raw token only in the Chrome extension local storage.
+- Store the raw token only in browser extension local storage.
 - Send the token with every `POST /api/events` snapshot.
 - Reject snapshots with missing or invalid tokens.
 
 User actions:
 
 - Run `sql/004_add_ingest_tokens.sql` in Supabase.
-- Reload the unpacked Chrome extension.
+- Reload the unpacked browser extension.
 - Re-link existing monitored profiles once so the extension receives tokens.
 - When deployed, add the production app/API domain to `manifest.json` host permissions.
 

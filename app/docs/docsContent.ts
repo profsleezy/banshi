@@ -43,7 +43,7 @@ export const docsPages: DocsPage[] = [
       {
         title: 'Install and pin',
         body: [
-          'For production, use the store link configured in NEXT_PUBLIC_CHROME_EXTENSION_URL. During private testing, load the unpacked extension only with trusted testers.',
+          'For production, use the Edge Add-ons link configured in NEXT_PUBLIC_CHROME_EXTENSION_URL. During private testing, load the unpacked extension only with trusted testers.',
         ],
         steps: [
           'Install Banshi from the provided extension link.',

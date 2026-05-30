@@ -42,15 +42,15 @@ export default function SupportPage() {
             Get help without digging through a ticket maze.
           </h1>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-zinc-400">
-            Support is intentionally simple: Telegram for quick setup and urgent questions, a Telegram community for updates, and Discord for teams that already work there.
+            Support is intentionally simple: Telegram DM for setup and urgent questions, plus a Telegram community for updates and operating notes.
           </p>
 
-          <div className="mt-8 grid gap-3 md:grid-cols-3">
+          <div className="mt-8 grid gap-3 md:grid-cols-2">
             {links.map((item) => (
               <a key={item.label} href={item.href} target="_blank" rel="noreferrer" className="terminal-card group rounded p-4">
                 <div className="flex items-center justify-between gap-3">
                   <span className="relative flex h-9 w-9 items-center justify-center rounded border border-zinc-800 bg-black/40 text-emerald-200">
-                    <TerminalIcon name={item.platform === 'discord' ? 'discord' : 'telegram'} className="h-5 w-5" />
+                    <TerminalIcon name={item.platform} className="h-5 w-5" />
                     {item.mode === 'community' && (
                       <span className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border border-zinc-800 bg-zinc-950 text-cyan-200">
                         <TerminalIcon name="users" className="h-2.5 w-2.5" />

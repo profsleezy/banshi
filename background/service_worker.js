@@ -4,13 +4,19 @@ const STORAGE_ENABLED_KEY = 'banshi_enabled';
 const STORAGE_SELECTED_CLIENT_KEY = 'banshi_selected_client_id';
 const STORAGE_MONITORED_KEY = 'banshi_monitored_clients';
 const STORAGE_INTERVAL_KEY = 'banshi_snapshot_interval_minutes';
-const DEFAULT_API_BASE = 'http://localhost:3000';
+const DEFAULT_API_BASE = 'https://banshi.vercel.app';
 const DEFAULT_SNAPSHOT_INTERVAL_MINUTES = 5;
 const SNAPSHOT_INTERVAL_OPTIONS = [1, 5, 15, 30];
 const IG_PROFILE_PATH_BLACKLIST = ['p', 'explore', 'stories', 'direct', 'accounts', 'a', 'reel', 'reels', 'tag', 'tv', 'about', 'developer', 'graphql'];
 
 function normalizeHandle(value) {
   return String(value || '').trim().replace(/^@/, '').toLowerCase();
+}
+
+function normalizeApiBase(value) {
+  const text = String(value || '').trim().replace(/\/$/, '');
+  if (!text || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(text)) return DEFAULT_API_BASE;
+  return text;
 }
 
 function isValidInstagramHandle(value) {
@@ -74,7 +80,7 @@ function getStorageDefaults() {
     chrome.storage.local.get([STORAGE_CLIENT_KEY, STORAGE_API_KEY, STORAGE_SELECTED_CLIENT_KEY, STORAGE_MONITORED_KEY, STORAGE_INTERVAL_KEY], (res) => {
       const out = {};
       if (res && res[STORAGE_CLIENT_KEY]) out.client_id = res[STORAGE_CLIENT_KEY];
-      if (res && res[STORAGE_API_KEY]) out.api_base = res[STORAGE_API_KEY];
+      if (res && res[STORAGE_API_KEY]) out.api_base = normalizeApiBase(res[STORAGE_API_KEY]);
       if (res && res[STORAGE_SELECTED_CLIENT_KEY]) out.selected_client = res[STORAGE_SELECTED_CLIENT_KEY];
       if (res && res[STORAGE_MONITORED_KEY]) out.monitored = res[STORAGE_MONITORED_KEY];
       out.snapshot_interval_minutes = normalizeSnapshotInterval(res && res[STORAGE_INTERVAL_KEY]);
@@ -91,8 +97,9 @@ function ensureDefaults() {
         const id = (crypto && crypto.randomUUID) ? crypto.randomUUID() : ('c_' + Math.random().toString(36).slice(2, 10));
         toSet[STORAGE_CLIENT_KEY] = id;
       }
-      if (!res || !res[STORAGE_API_KEY]) {
-        toSet[STORAGE_API_KEY] = DEFAULT_API_BASE;
+      const normalizedApiBase = normalizeApiBase(res && res[STORAGE_API_KEY]);
+      if (!res || !res[STORAGE_API_KEY] || normalizedApiBase !== res[STORAGE_API_KEY]) {
+        toSet[STORAGE_API_KEY] = normalizedApiBase;
       }
       if (!res || typeof res[STORAGE_ENABLED_KEY] === 'undefined') {
         // Harvesting is always enabled by default
@@ -115,7 +122,7 @@ function getStoredValues() {
     chrome.storage.local.get([STORAGE_CLIENT_KEY, STORAGE_API_KEY, STORAGE_SELECTED_CLIENT_KEY, STORAGE_MONITORED_KEY, STORAGE_INTERVAL_KEY], (res) => {
       resolve({
         client_id: res && res[STORAGE_CLIENT_KEY] ? res[STORAGE_CLIENT_KEY] : null,
-        api_base: res && res[STORAGE_API_KEY] ? res[STORAGE_API_KEY] : DEFAULT_API_BASE,
+        api_base: normalizeApiBase(res && res[STORAGE_API_KEY]),
         selected_client: res && res[STORAGE_SELECTED_CLIENT_KEY] ? res[STORAGE_SELECTED_CLIENT_KEY] : null,
         monitored: res && res[STORAGE_MONITORED_KEY] ? res[STORAGE_MONITORED_KEY] : {},
         snapshot_interval_minutes: normalizeSnapshotInterval(res && res[STORAGE_INTERVAL_KEY])
@@ -236,7 +243,7 @@ async function performSnapshots() {
   }
 
   // find instagram tabs
-  chrome.tabs.query({ url: '*://*.instagram.com/*' }, async (tabs) => {
+  chrome.tabs.query({ url: 'https://*.instagram.com/*' }, async (tabs) => {
     console.log('performSnapshots: found tabs', tabs && tabs.length);
     if (!tabs || tabs.length === 0) {
       console.log('performSnapshots: no instagram tabs found');
@@ -546,7 +553,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.type === 'SET_API_BASE') {
     const url = message.api_base;
-    chrome.storage.local.set({ [STORAGE_API_KEY]: url }, () => sendResponse({ ok: true }));
+    chrome.storage.local.set({ [STORAGE_API_KEY]: normalizeApiBase(url) }, () => sendResponse({ ok: true }));
     return true;
   }
   if (message.type === 'SET_SNAPSHOT_INTERVAL') {

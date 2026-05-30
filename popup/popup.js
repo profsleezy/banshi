@@ -1,7 +1,7 @@
 const STORAGE_MONITORED_KEY = 'banshi_monitored_clients'
 const STORAGE_API_KEY = 'banshi_api_base_url'
 const STORAGE_INTERVAL_KEY = 'banshi_snapshot_interval_minutes'
-const DEFAULT_API_BASE = 'http://localhost:3000'
+const DEFAULT_API_BASE = 'https://banshi.vercel.app'
 const DEFAULT_SNAPSHOT_INTERVAL_MINUTES = 5
 const SNAPSHOT_INTERVAL_OPTIONS = [1, 5, 15, 30]
 const IG_PROFILE_PATH_BLACKLIST = ['p', 'explore', 'stories', 'direct', 'accounts', 'a', 'reel', 'reels', 'tag', 'tv', 'about', 'developer', 'graphql']
@@ -9,6 +9,12 @@ let currentSnapshotIntervalMinutes = DEFAULT_SNAPSHOT_INTERVAL_MINUTES
 
 function normalizeHandle(value) {
   return String(value || '').trim().replace(/^@/, '').toLowerCase()
+}
+
+function normalizeApiBase(value) {
+  const text = String(value || '').trim().replace(/\/$/, '')
+  if (!text || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(text)) return DEFAULT_API_BASE
+  return text
 }
 
 function isValidInstagramHandle(value) {
@@ -72,7 +78,7 @@ function openUrl(url) {
 }
 
 function dashboardUrl(base, path) {
-  return `${(base || DEFAULT_API_BASE).replace(/\/$/, '')}${path}`
+  return `${normalizeApiBase(base)}${path}`
 }
 
 function setText(id, value) {
@@ -271,7 +277,7 @@ function unmonitorClient(handle, button) {
   chrome.storage.local.get([STORAGE_MONITORED_KEY, STORAGE_API_KEY], (res) => {
     const monitored = (res && res[STORAGE_MONITORED_KEY]) ? res[STORAGE_MONITORED_KEY] : {}
     const item = monitored[handle] || {}
-    const base = (res && res[STORAGE_API_KEY]) ? res[STORAGE_API_KEY] : DEFAULT_API_BASE
+    const base = normalizeApiBase(res && res[STORAGE_API_KEY])
     const params = new URLSearchParams()
 
     if (item.client_id) params.set('client_id', item.client_id)
@@ -292,7 +298,7 @@ function init() {
 
   chrome.storage.local.get([STORAGE_MONITORED_KEY, STORAGE_API_KEY, STORAGE_INTERVAL_KEY], (res) => {
     const monitored = (res && res[STORAGE_MONITORED_KEY]) ? res[STORAGE_MONITORED_KEY] : {}
-    const base = (res && res[STORAGE_API_KEY]) ? res[STORAGE_API_KEY] : DEFAULT_API_BASE
+    const base = normalizeApiBase(res && res[STORAGE_API_KEY])
     currentSnapshotIntervalMinutes = normalizeSnapshotInterval(res && res[STORAGE_INTERVAL_KEY])
     renderIntervalControl(currentSnapshotIntervalMinutes)
     renderClients(monitored)

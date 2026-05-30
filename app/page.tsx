@@ -12,16 +12,14 @@ function SupportCard({
   label: string
   href: string
   description: string
-  platform: 'telegram' | 'discord'
+  platform: 'telegram'
   mode: 'direct' | 'community'
 }) {
-  const icon = platform === 'discord' ? 'discord' : 'telegram'
-
   return (
     <a href={href} target="_blank" rel="noreferrer" className="terminal-card group rounded p-5">
       <div className="flex items-center justify-between gap-3">
         <div className="relative flex h-10 w-10 items-center justify-center rounded border border-zinc-800 bg-black/35 text-emerald-200">
-          <TerminalIcon name={icon} className="h-5 w-5" />
+          <TerminalIcon name={platform} className="h-5 w-5" />
           {mode === 'community' && (
             <span className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border border-zinc-800 bg-zinc-950 text-cyan-200">
               <TerminalIcon name="users" className="h-2.5 w-2.5" />
@@ -189,7 +187,7 @@ export default function Home() {
               <TerminalIcon name="arrowRight" className="h-4 w-4" />
             </Link>
           </div>
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-2">
             {supportLinks.map((item) => (
               <SupportCard key={item.label} {...item} />
             ))}

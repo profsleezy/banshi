@@ -53,7 +53,7 @@ export default function PricingPage() {
     }
     if (!form.contact.trim()) {
       setRequestState('error')
-      setError('Add Telegram or Discord so setup can continue.')
+      setError('Add Telegram so setup can continue.')
       return
     }
     setRequestState('sending')
@@ -72,7 +72,7 @@ export default function PricingPage() {
         body: JSON.stringify({
           email: authEmail,
           telegram: form.contact,
-          discord: form.contact,
+          discord: '',
           plan: selectedPlan,
           message: `Client range: ${form.clientRange}`,
         }),
@@ -107,10 +107,6 @@ export default function PricingPage() {
                 <a href={links.telegramProfile.href} target="_blank" rel="noreferrer" className="terminal-button focus-ring inline-flex items-center justify-center gap-2 rounded px-5 py-3 text-sm font-semibold">
                   <TerminalIcon name="telegram" className="h-4 w-4" />
                   Message on Telegram
-                </a>
-                <a href={links.discordProfile.href} target="_blank" rel="noreferrer" className="terminal-button-secondary focus-ring inline-flex items-center justify-center gap-2 rounded px-5 py-3 text-sm font-medium">
-                  <TerminalIcon name="discord" className="h-4 w-4" />
-                  Open Discord
                 </a>
               </div>
             </div>
@@ -183,7 +179,7 @@ export default function PricingPage() {
                 <div className="mt-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
                   <input
                     className="terminal-input rounded px-3 py-3 text-sm"
-                    placeholder="Telegram or Discord"
+                    placeholder="Telegram username"
                     value={form.contact}
                     onChange={(event) => setForm((current) => ({ ...current, contact: event.target.value }))}
                   />
@@ -234,7 +230,7 @@ export default function PricingPage() {
                 <a key={link.href} href={link.href} target="_blank" rel="noreferrer" className="terminal-button-secondary focus-ring flex items-center justify-between gap-3 rounded px-3 py-3 text-sm">
                   <span className="flex min-w-0 items-center gap-3">
                     <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded border border-zinc-800 bg-black/35 text-emerald-200">
-                      <TerminalIcon name={link.platform === 'discord' ? 'discord' : 'telegram'} className="h-5 w-5" />
+                      <TerminalIcon name={link.platform} className="h-5 w-5" />
                       {link.mode === 'community' && (
                         <span className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border border-zinc-800 bg-zinc-950 text-cyan-200">
                           <TerminalIcon name="users" className="h-2.5 w-2.5" />

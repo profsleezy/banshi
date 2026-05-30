@@ -18,7 +18,7 @@ export async function POST(req: Request) {
   const telegram = clean(body?.telegram, 120)
   const discord = clean(body?.discord, 120)
   if (!telegram && !discord) {
-    return NextResponse.json(apiUtils.errorPayload('Add Telegram or Discord so setup can continue.'), { status: 400, headers: apiUtils.CORS_HEADERS })
+    return NextResponse.json(apiUtils.errorPayload('Add Telegram so setup can continue.'), { status: 400, headers: apiUtils.CORS_HEADERS })
   }
 
   const admin = apiUtils.makeAdminClient()

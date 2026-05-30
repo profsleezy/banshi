@@ -147,13 +147,13 @@ export default function PrivacyPage() {
 
           <Section title="13. Contact">
             <p>
-              For privacy questions or support, contact us through Telegram or Discord. The public support links are controlled by environment variables so the operator can update them without rewriting this policy.
+              For privacy questions or support, contact us through Telegram. The public support links are controlled by environment variables so the operator can update them without rewriting this policy.
             </p>
             <div className="grid gap-2 sm:grid-cols-3">
               {Object.values(support).map((item) => (
                 <a key={item.label} href={item.href} target="_blank" rel="noreferrer" className="flex items-center gap-3 rounded border border-zinc-800 bg-black/30 p-3 text-zinc-200 hover:border-emerald-300/30">
                   <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded border border-zinc-800 bg-black/40 text-emerald-200">
-                    <TerminalIcon name={item.platform === 'discord' ? 'discord' : 'telegram'} className="h-5 w-5" />
+                    <TerminalIcon name={item.platform} className="h-5 w-5" />
                     {item.mode === 'community' && (
                       <span className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border border-zinc-800 bg-zinc-950 text-cyan-200">
                         <TerminalIcon name="users" className="h-2.5 w-2.5" />

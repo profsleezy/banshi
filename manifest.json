@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Banshi Collector",
-  "version": "1.0",
-  "description": "Collects visible Instagram profile snapshots and posts them to /api/events.",
+  "version": "1.0.0",
+  "description": "Collects public Instagram profile snapshots for Banshi account integrity monitoring.",
   "permissions": [
     "storage",
     "alarms",
@@ -10,20 +10,35 @@
     "scripting"
   ],
   "host_permissions": [
-    "*://*.instagram.com/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*"
+    "https://instagram.com/*",
+    "https://*.instagram.com/*",
+    "https://banshi.vercel.app/*"
   ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "background": {
     "service_worker": "background/service_worker.js"
   },
   "action": {
     "default_title": "Banshi Collector",
-    "default_popup": "popup/popup.html"
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
   },
   "content_scripts": [
     {
-      "matches": ["*://*.instagram.com/*"],
+      "matches": [
+        "https://instagram.com/*",
+        "https://*.instagram.com/*"
+      ],
       "js": ["content_scripts/profile_collector.js"],
       "run_at": "document_idle"
     }
