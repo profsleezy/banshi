@@ -7,13 +7,14 @@ This is the manual paid-access workflow for the MVP.
 1. The customer signs up on the site.
 2. Open Supabase.
 3. Go to SQL Editor.
-4. Run this:
+4. If you already ran `sql/008_add_user_access_paywall.sql` before the helper fix, run `sql/009_fix_access_grant_helper.sql` once.
+5. Run this:
 
 ```sql
 SELECT * FROM public.grant_user_access_by_email('customer@email.com', 'agency');
 ```
 
-5. Tell the customer to refresh the dashboard.
+6. Tell the customer to refresh the dashboard.
 
 ## Plans
 
@@ -62,4 +63,3 @@ FROM auth.users
 ORDER BY created_at DESC
 LIMIT 20;
 ```
-

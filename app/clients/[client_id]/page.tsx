@@ -112,6 +112,12 @@ function priorityClass(priority: ClientInsight['priority']) {
   return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
 }
 
+function reviewClass(urgency: ClientInsight['reviewUrgency']) {
+  if (urgency === 'review_now') return 'border-red-500/40 bg-red-500/10 text-red-200'
+  if (urgency === 'monitor' || urgency === 'paused') return 'border-amber-500/40 bg-amber-500/10 text-amber-100'
+  return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+}
+
 function signalClass(tone: string) {
   if (tone === 'critical') return 'border-red-500/40 bg-red-500/10 text-red-200'
   if (tone === 'risk') return 'border-orange-500/40 bg-orange-500/10 text-orange-200'
@@ -187,6 +193,34 @@ function downloadTextFile(filename: string, content: string, type: string) {
 function buildReportCsv(insight: ClientInsight, logs: InvestigationLog[]) {
   const rows = [
     ['record_type', 'timestamp', 'client', 'handle', 'followers', 'following', 'posts', 'risk_level', 'risk_score', 'severity', 'status', 'note_or_signal'],
+    [
+      'assistant_summary',
+      new Date().toISOString(),
+      insight.displayName,
+      insight.handle || insight.accountId || '',
+      '',
+      '',
+      '',
+      insight.riskStatus ?? '',
+      insight.riskScore ?? '',
+      insight.reviewLabel,
+      insight.reviewUrgency,
+      insight.nextBestAction,
+    ],
+    ...insight.assistantFindings.map((finding) => [
+      'assistant_finding',
+      insight.snapshotAt ?? '',
+      insight.displayName,
+      insight.handle || insight.accountId || '',
+      '',
+      '',
+      '',
+      insight.riskStatus ?? '',
+      insight.riskScore ?? '',
+      finding.tone,
+      finding.title,
+      `${finding.detail} ${finding.action}`,
+    ]),
     ...insight.snapshots.map((snapshot) => {
       const meta = snapshot.metadata ?? {}
       const derived = meta.derived ?? {}
@@ -369,63 +403,40 @@ function LineChart({
 }
 
 function reportGuidance(insight: ClientInsight) {
-  const lowConfidence = typeof insight.accountAgeConfidence === 'number' && insight.accountAgeConfidence < 0.7
-  const thinHistory = (insight.snapshotCount ?? insight.snapshots.length) < 10
-  const staleMs = insight.snapshotAt ? Date.now() - new Date(insight.snapshotAt).getTime() : null
-  const stale = staleMs !== null && (Number.isNaN(staleMs) || staleMs > 24 * 60 * 60 * 1000)
+  const topFinding = insight.assistantFindings[0]
+  const watchFinding = insight.assistantFindings.find((finding) => finding.tone !== 'good' && finding !== topFinding)
 
-  const now = !insight.monitoringEnabled
-    ? 'Turn monitoring back on to restart live snapshots.'
-    : insight.priority === 'Escalate'
-      ? 'Verify ownership, capture a fresh snapshot, and prepare escalation context.'
-      : insight.priority === 'Prepare'
-        ? 'Review profile edits, outbound link, and audience movement before client check-in.'
-        : insight.priority === 'Review'
-          ? 'Compare flags against planned campaigns or expected account activity.'
-          : 'No urgent action. Let the baseline keep maturing.'
+  const now = insight.nextBestAction
+  const watch = watchFinding
+    ? `${watchFinding.detail} ${watchFinding.action}`
+    : topFinding?.tone === 'good'
+      ? 'No action needed today. Keep the profile tab available so the baseline keeps improving.'
+      : 'Watch the next snapshot to confirm whether this was a one-off movement or the start of a pattern.'
 
-  const watch = stale
-    ? 'Coverage is stale. Keep the Instagram profile tab open.'
-    : thinHistory || lowConfidence
-      ? 'Baseline is thin; read trends as directional.'
-      : insight.externalLinkPresent
-        ? 'External link is present. Confirm the destination is approved.'
-        : 'Watch follower movement, handle/privacy changes, and new links.'
-
-  const clientNote = insight.priority === 'Routine'
-    ? 'Stable public signals from the available history.'
-    : `Driven by: ${insight.riskNotes || insight.signals.map((signal) => signal.label).join(', ')}.`
+  const clientNote = topFinding
+    ? `${topFinding.title}: ${topFinding.detail}`
+    : 'Stable public signals from the available history.'
 
   return { now, watch, clientNote }
 }
 
 function CommandBrief({ insight }: { insight: ClientInsight }) {
   const guidance = reportGuidance(insight)
-  const headline = !insight.monitoringEnabled
-    ? 'Resume coverage'
-    : insight.priority === 'Escalate'
-      ? 'Escalate now'
-      : insight.priority === 'Prepare'
-        ? 'Prepare review'
-        : insight.priority === 'Review'
-          ? 'Review today'
-          : 'Stay the course'
-  const tone = !insight.monitoringEnabled || insight.priority === 'Review'
-    ? 'border-amber-500/30 bg-amber-500/5'
-    : insight.priority === 'Escalate'
-      ? 'border-red-500/30 bg-red-500/5'
-      : insight.priority === 'Prepare'
-        ? 'border-orange-500/30 bg-orange-500/5'
-        : 'border-emerald-500/25 bg-emerald-500/5'
-  const signalSummary = insight.signals.length
-    ? insight.signals.map((signal) => signal.label).slice(0, 3).join(', ')
-    : 'No suspicious metadata signals'
+  const headline = insight.reviewUrgency === 'healthy' ? 'Healthy today' : insight.reviewLabel
+  const tone = insight.reviewUrgency === 'review_now'
+    ? 'border-red-500/30 bg-red-500/5'
+    : insight.reviewUrgency === 'monitor' || insight.reviewUrgency === 'paused'
+      ? 'border-amber-500/30 bg-amber-500/5'
+      : 'border-emerald-500/25 bg-emerald-500/5'
+  const topFindings = insight.assistantFindings.slice(0, 3)
+  const signalSummary = insight.reviewSummary || 'No unusual activity'
 
   return (
     <section className={`terminal-panel mb-6 rounded border p-5 ${tone}`}>
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div>
           <div className="flex flex-wrap items-center gap-2">
+            <span className={`rounded border px-2.5 py-1 text-xs font-medium ${reviewClass(insight.reviewUrgency)}`}>{insight.reviewLabel}</span>
             <span className={`rounded border px-2.5 py-1 text-xs font-medium ${priorityClass(insight.priority)}`}>{insight.priority}</span>
             <span className={`rounded border px-2.5 py-1 text-xs font-medium ${statusClass(insight.riskStatus)}`}>
               {insight.riskStatus ?? 'No score'}{typeof insight.riskScore === 'number' ? ` ${insight.riskScore}` : ''}
@@ -440,7 +451,7 @@ function CommandBrief({ insight }: { insight: ClientInsight }) {
               <TerminalIcon name="shield" className="h-5 w-5" />
             </div>
             <div className="min-w-0">
-              <div className="terminal-label text-xs">next move</div>
+              <div className="terminal-label text-xs">next best action</div>
               <h2 className="mt-1 text-2xl font-semibold text-zinc-50">{headline}</h2>
               <p className="mt-3 max-w-3xl text-base leading-7 text-zinc-300">{guidance.now}</p>
             </div>
@@ -457,10 +468,23 @@ function CommandBrief({ insight }: { insight: ClientInsight }) {
             <div className="rounded border border-zinc-800/80 bg-black/25 p-3">
               <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-zinc-500">
                 <TerminalIcon name="activity" className="h-3.5 w-3.5" />
-                Signal driver
+                Why
               </div>
               <p className="mt-2 text-sm leading-6 text-zinc-300">{signalSummary}</p>
             </div>
+          </div>
+
+          <div className="mt-5 space-y-2">
+            {topFindings.map((finding) => (
+              <div key={finding.title} className="rounded border border-zinc-800/80 bg-black/20 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-medium text-zinc-100">{finding.title}</div>
+                  {finding.evidence && <div className="text-xs text-zinc-500">{finding.evidence}</div>}
+                </div>
+                <p className="mt-1 text-xs leading-5 text-zinc-500">{finding.detail}</p>
+                <p className="mt-2 text-xs leading-5 text-zinc-300">{finding.action}</p>
+              </div>
+            ))}
           </div>
         </div>
 

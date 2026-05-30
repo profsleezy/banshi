@@ -76,6 +76,7 @@ $$;
 -- Admin-only convenience helper.
 -- After a customer signs up, run:
 -- SELECT * FROM public.grant_user_access_by_email('customer@email.com', 'agency');
+DROP FUNCTION IF EXISTS public.grant_user_access_by_email(text, text, integer, integer);
 CREATE OR REPLACE FUNCTION public.grant_user_access_by_email(
   p_email text,
   p_plan text DEFAULT 'agency',
@@ -83,12 +84,12 @@ CREATE OR REPLACE FUNCTION public.grant_user_access_by_email(
   p_days integer DEFAULT NULL
 )
 RETURNS TABLE (
-  user_id uuid,
-  email text,
-  status text,
-  plan text,
-  client_limit integer,
-  expires_at timestamptz
+  granted_user_id uuid,
+  granted_email text,
+  access_status text,
+  access_plan text,
+  access_client_limit integer,
+  access_expires_at timestamptz
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -135,15 +136,19 @@ BEGIN
     ELSE now() + make_interval(days => p_days)
   END;
 
-  INSERT INTO public.user_access (user_id, status, plan, client_limit, granted_at, expires_at, updated_at)
-  VALUES (v_user_id, 'active', p_plan, v_client_limit, now(), v_expires_at, now())
-  ON CONFLICT (user_id) DO UPDATE
+  UPDATE public.user_access ua
   SET status = 'active',
-      plan = excluded.plan,
-      client_limit = excluded.client_limit,
+      plan = p_plan,
+      client_limit = v_client_limit,
       granted_at = now(),
-      expires_at = excluded.expires_at,
-      updated_at = now();
+      expires_at = v_expires_at,
+      updated_at = now()
+  WHERE ua.user_id = v_user_id;
+
+  IF NOT FOUND THEN
+    INSERT INTO public.user_access (user_id, status, plan, client_limit, granted_at, expires_at, updated_at)
+    VALUES (v_user_id, 'active', p_plan, v_client_limit, now(), v_expires_at, now());
+  END IF;
 
   RETURN QUERY
   SELECT ua.user_id, v_email, ua.status, ua.plan, ua.client_limit, ua.expires_at
@@ -157,14 +162,15 @@ REVOKE ALL ON FUNCTION public.grant_user_access_by_email(text, text, integer, in
 REVOKE ALL ON FUNCTION public.grant_user_access_by_email(text, text, integer, integer) FROM authenticated;
 
 -- Admin-only helper to turn access off by email.
+DROP FUNCTION IF EXISTS public.suspend_user_access_by_email(text);
 CREATE OR REPLACE FUNCTION public.suspend_user_access_by_email(p_email text)
 RETURNS TABLE (
-  user_id uuid,
-  email text,
-  status text,
-  plan text,
-  client_limit integer,
-  expires_at timestamptz
+  suspended_user_id uuid,
+  suspended_email text,
+  access_status text,
+  access_plan text,
+  access_client_limit integer,
+  access_expires_at timestamptz
 )
 LANGUAGE plpgsql
 SECURITY DEFINER

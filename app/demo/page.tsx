@@ -24,7 +24,7 @@ const clients: DemoClient[] = [
     readiness: 86,
     risk: 'Healthy',
     priority: 'Routine',
-    action: 'Keep normal monitoring. Baseline is mature and current.',
+    action: 'No action needed today. Keep normal monitoring and use this account as the healthy baseline.',
     signals: ['fresh snapshots', 'stable identity', 'mature baseline'],
     points: [201, 204, 207, 211, 216, 218],
   },
@@ -36,7 +36,7 @@ const clients: DemoClient[] = [
     readiness: 62,
     risk: 'Watch',
     priority: 'Review',
-    action: 'Confirm the new external link matches the client campaign calendar.',
+    action: 'External link is present. Confirm the destination matches the client campaign calendar before the next report.',
     signals: ['external link', 'link review', 'low volatility'],
     points: [71, 71.2, 71.5, 72, 72.1, 72.4],
   },
@@ -48,7 +48,7 @@ const clients: DemoClient[] = [
     readiness: 48,
     risk: 'Risk',
     priority: 'Prepare',
-    action: 'Ask account owner to verify recent bio and link edits before the next post.',
+    action: 'Bio and link movement need owner confirmation. Verify the edits before the next scheduled post.',
     signals: ['bio changed', 'verified', 'follow drift'],
     points: [139, 140, 141, 158, 161, 161],
   },
@@ -60,7 +60,7 @@ const clients: DemoClient[] = [
     readiness: 31,
     risk: 'Critical',
     priority: 'Escalate',
-    action: 'Escalate to owner. Username changed, scraper went stale, and follower delta is abnormal.',
+    action: 'Review now. Username changed, collector went stale, and follower movement broke baseline.',
     signals: ['username change', 'scraper stale', 'audience spike'],
     points: [40, 40.1, 40.2, 43.7, 44.1, 44.1],
   },
@@ -144,7 +144,7 @@ export default function DemoPage() {
             <div className="mt-1 text-xs text-zinc-500">sample monitored accounts</div>
           </div>
           <div className="terminal-card rounded p-4">
-            <div className="terminal-label text-xs">agency queue</div>
+            <div className="terminal-label text-xs">daily review queue</div>
             <div className="mt-2 text-3xl font-semibold text-amber-100">3</div>
             <div className="mt-1 text-xs text-zinc-500">accounts with useful next steps</div>
           </div>

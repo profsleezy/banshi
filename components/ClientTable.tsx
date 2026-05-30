@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import TerminalIcon from './TerminalIcon'
+import type { AssistantFinding, ReviewUrgency } from '../lib/clientInsights'
 
 export type ClientRow = {
   id: string
@@ -38,6 +39,11 @@ export type ClientRow = {
   verifiedBadge?: boolean | null
   isPrivate?: boolean | null
   snapshotAt?: string | null
+  reviewUrgency?: ReviewUrgency | null
+  reviewLabel?: string | null
+  reviewSummary?: string | null
+  assistantFindings?: AssistantFinding[]
+  nextBestAction?: string | null
 }
 
 type Props = {
@@ -64,6 +70,20 @@ function signalClass(kind: 'good' | 'warn' | 'bad' | 'neutral') {
   if (kind === 'warn') return 'border-amber-500/30 bg-amber-500/10 text-amber-100'
   if (kind === 'bad') return 'border-red-500/30 bg-red-500/10 text-red-200'
   return 'border-zinc-700 bg-zinc-950 text-zinc-300'
+}
+
+function urgencyClass(urgency?: ReviewUrgency | null) {
+  if (urgency === 'review_now') return 'border-red-500/40 bg-red-500/10 text-red-200'
+  if (urgency === 'monitor' || urgency === 'paused') return 'border-amber-500/40 bg-amber-500/10 text-amber-100'
+  return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+}
+
+function findingClass(tone: AssistantFinding['tone']) {
+  if (tone === 'critical') return 'border-red-500/30 text-red-200'
+  if (tone === 'risk') return 'border-orange-500/30 text-orange-200'
+  if (tone === 'watch') return 'border-amber-500/30 text-amber-100'
+  if (tone === 'good') return 'border-emerald-500/25 text-emerald-200'
+  return 'border-zinc-800 text-zinc-400'
 }
 
 function formatNumber(value?: number | null) {
@@ -182,6 +202,7 @@ export default function ClientTable({
         const removing = removingClientId === client.id
         const paused = client.monitoringEnabled === false
         const riskStatus = client.riskStatus ?? 'No score'
+        const topFindings = (client.assistantFindings ?? []).slice(0, 3)
 
         return (
           <article key={client.id} className={`terminal-card terminal-boot rounded p-5 shadow-sm ${paused ? 'border-amber-500/30' : ''}`}>
@@ -196,6 +217,9 @@ export default function ClientTable({
                       </Link>
                       <span className={`rounded border px-2.5 py-1 text-xs font-medium ${statusClass(client.riskStatus)}`}>
                         {riskStatus}{typeof client.riskScore === 'number' ? ` ${client.riskScore}` : ''}
+                      </span>
+                      <span className={`inline-flex items-center gap-1 rounded border px-2.5 py-1 text-xs font-medium ${urgencyClass(client.reviewUrgency)}`}>
+                        {client.reviewLabel ?? (paused ? 'Paused' : 'Healthy')}
                       </span>
                       <span className={`inline-flex items-center gap-1 rounded border px-2.5 py-1 text-xs font-medium ${paused ? signalClass('warn') : signalClass('good')}`}>
                         <TerminalIcon name={paused ? 'alert' : 'eye'} className="h-3 w-3" />
@@ -225,9 +249,31 @@ export default function ClientTable({
 
               <div className="w-full shrink-0 xl:w-72">
                 <div className="rounded border border-zinc-800 bg-black/30 p-4">
-                  <div className="mb-3 text-xs font-medium uppercase tracking-wide text-zinc-500">Signals</div>
-                  <Signals client={client} />
-                  {client.riskReason && <div className="mt-4 text-xs leading-5 text-zinc-500">{client.riskReason}</div>}
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">Today</div>
+                    <span className={`rounded border px-2 py-0.5 text-[11px] font-medium ${urgencyClass(client.reviewUrgency)}`}>
+                      {client.reviewLabel ?? 'Healthy'}
+                    </span>
+                  </div>
+                  <p className="text-sm font-medium leading-6 text-zinc-100">
+                    {client.reviewSummary ?? client.riskReason ?? 'No unusual activity.'}
+                  </p>
+                  <p className="mt-2 text-xs leading-5 text-zinc-500">
+                    {client.nextBestAction ?? 'No action needed today. Keep monitoring.'}
+                  </p>
+                  {topFindings.length > 0 && (
+                    <div className="mt-4 space-y-2">
+                      {topFindings.map((finding) => (
+                        <div key={finding.title} className={`border-l-2 pl-3 ${findingClass(finding.tone)}`}>
+                          <div className="text-xs font-medium text-zinc-200">{finding.title}</div>
+                          <div className="mt-0.5 text-[11px] leading-4 text-zinc-500">{finding.detail}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-4">
+                    <Signals client={client} />
+                  </div>
                   {client.latestAlert && <div className="mt-4 text-xs leading-5 text-zinc-500">{client.latestAlert}</div>}
                 </div>
 

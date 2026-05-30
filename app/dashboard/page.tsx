@@ -12,6 +12,7 @@ import ClientTable, { ClientRow } from '../../components/ClientTable'
 import { getRecentAlerts } from '../../lib/alerts'
 import AlertFeed from '../../components/AlertFeed'
 import { PaywallPanel, useAccessStatus } from '../../components/AccessGate'
+import { buildClientInsight, type ClientInsight } from '../../lib/clientInsights'
 
 type AlertItem = {
   id: string
@@ -265,6 +266,25 @@ function statusClass(status?: string | null) {
   return 'border-zinc-700 bg-zinc-900 text-zinc-400'
 }
 
+function reviewRank(row: ClientRow) {
+  if (row.reviewUrgency === 'review_now') return 0
+  if (row.reviewUrgency === 'monitor') return 1
+  if (row.reviewUrgency === 'paused') return 2
+  return 3
+}
+
+function reviewClass(urgency?: ClientInsight['reviewUrgency'] | null) {
+  if (urgency === 'review_now') return 'border-red-500/40 bg-red-500/10 text-red-200'
+  if (urgency === 'monitor' || urgency === 'paused') return 'border-amber-500/40 bg-amber-500/10 text-amber-100'
+  return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+}
+
+function reviewMarkerClass(urgency?: ClientInsight['reviewUrgency'] | null) {
+  if (urgency === 'review_now') return 'bg-red-400'
+  if (urgency === 'monitor' || urgency === 'paused') return 'bg-amber-300'
+  return 'bg-emerald-300'
+}
+
 function SnapshotCard({ title, value, caption, tone = 'neutral', icon }: { title: string; value: string | number; caption: string; tone?: 'neutral' | 'good' | 'warn' | 'bad'; icon: IconName }) {
   const toneClass = {
     neutral: 'text-zinc-100',
@@ -473,42 +493,54 @@ export default function DashboardPage() {
           externalLinkPresent,
           usernameChangeDetected,
         })
+        const insight = buildClientInsight({
+          client,
+          snapshots: latest ? [latest] : [],
+          riskStatus: risk ?? null,
+          riskHistory: latestHistory ? [latestHistory as any] : [],
+          alerts: latestAlert ? [latestAlert as any] : [],
+        })
 
         return {
           id: client.id,
           name: client.name,
-          platform: client.platform ?? 'IG',
+          platform: insight.platform,
           accountId: client.account_id,
           monitoringEnabled,
-          handle: displayHandle,
-          profileName: cleanProfileName(name, displayHandle, fallbackName),
-          riskStatus,
-          riskScore: safeNumber(risk?.score) ?? safeNumber(latestHistory?.score) ?? fallbackScore,
-          riskReason: risk?.notes ?? latestHistory?.notes ?? (latest ? 'No suspicious metadata signals' : null),
+          handle: insight.handle ?? displayHandle,
+          profileName: insight.displayName || cleanProfileName(name, displayHandle, fallbackName),
+          riskStatus: insight.riskStatus ?? riskStatus,
+          riskScore: insight.riskScore ?? safeNumber(risk?.score) ?? safeNumber(latestHistory?.score) ?? fallbackScore,
+          riskReason: insight.riskNotes ?? risk?.notes ?? latestHistory?.notes ?? (latest ? 'No suspicious metadata signals' : null),
           lastChecked: client.last_checked ?? client.updated_at ?? client.created_at,
           latestAlert: latestAlert?.message ?? null,
           latestAlertSeverity: latestAlert?.severity ?? null,
-          followers: safeNumber(readAny(sources, ['followers', 'followers_count', 'follower_count'])),
-          following: safeNumber(readAny(sources, ['following', 'following_count'])),
-          posts: safeNumber(readAny(sources, ['posts', 'posts_count', 'post_count', 'media_count'])),
-          followRatio: safeNumber(derived.follow_ratio),
-          followRatioDriftPct: safeNumber(derived.follow_ratio_drift_pct),
-          followerVelocity7d: safeNumber(derived.follower_velocity_7d),
-          followerPctChange30d: safeNumber(derived.follower_pct_change_30d),
-          followingVelocity7d: safeNumber(derived.following_velocity_7d),
-          postGrowthRate30d: safeNumber(derived.post_growth_rate_30d),
-          profileStabilityScore,
-          accountAgeConfidence,
-          snapshotCount,
-          staleData: readiness.staleData,
-          staleHours: readiness.staleHours,
-          banRiskReadinessScore: readiness.banRiskReadinessScore,
-          banRiskReadinessLevel: readiness.banRiskReadinessLevel,
-          usernameChangeDetected,
-          externalLinkPresent,
-          verifiedBadge: typeof readAny(sources, ['verified_badge']) === 'boolean' ? readAny(sources, ['verified_badge']) : null,
-          isPrivate: typeof readAny(sources, ['is_private']) === 'boolean' ? readAny(sources, ['is_private']) : null,
-          snapshotAt,
+          followers: insight.followers ?? safeNumber(readAny(sources, ['followers', 'followers_count', 'follower_count'])),
+          following: insight.following ?? safeNumber(readAny(sources, ['following', 'following_count'])),
+          posts: insight.posts ?? safeNumber(readAny(sources, ['posts', 'posts_count', 'post_count', 'media_count'])),
+          followRatio: insight.followRatio ?? safeNumber(derived.follow_ratio),
+          followRatioDriftPct: insight.followRatioDriftPct ?? safeNumber(derived.follow_ratio_drift_pct),
+          followerVelocity7d: insight.followerVelocity7d ?? safeNumber(derived.follower_velocity_7d),
+          followerPctChange30d: insight.followerPctChange30d ?? safeNumber(derived.follower_pct_change_30d),
+          followingVelocity7d: insight.followingVelocity7d ?? safeNumber(derived.following_velocity_7d),
+          postGrowthRate30d: insight.postGrowthRate30d ?? safeNumber(derived.post_growth_rate_30d),
+          profileStabilityScore: insight.profileStabilityScore ?? profileStabilityScore,
+          accountAgeConfidence: insight.accountAgeConfidence ?? accountAgeConfidence,
+          snapshotCount: insight.snapshotCount ?? snapshotCount,
+          staleData: insight.staleData ?? readiness.staleData,
+          staleHours: insight.staleHours ?? readiness.staleHours,
+          banRiskReadinessScore: insight.banRiskReadinessScore ?? readiness.banRiskReadinessScore,
+          banRiskReadinessLevel: insight.banRiskReadinessLevel ?? readiness.banRiskReadinessLevel,
+          usernameChangeDetected: insight.usernameChangeDetected ?? usernameChangeDetected,
+          externalLinkPresent: insight.externalLinkPresent ?? externalLinkPresent,
+          verifiedBadge: insight.verifiedBadge ?? (typeof readAny(sources, ['verified_badge']) === 'boolean' ? readAny(sources, ['verified_badge']) : null),
+          isPrivate: insight.isPrivate ?? (typeof readAny(sources, ['is_private']) === 'boolean' ? readAny(sources, ['is_private']) : null),
+          snapshotAt: insight.snapshotAt ?? snapshotAt,
+          reviewUrgency: insight.reviewUrgency,
+          reviewLabel: insight.reviewLabel,
+          reviewSummary: insight.reviewSummary,
+          assistantFindings: insight.assistantFindings,
+          nextBestAction: insight.nextBestAction,
         }
       })
 
@@ -571,7 +603,7 @@ export default function DashboardPage() {
     const monitored = monitoredRows.length
     const paused = total - monitored
     const critical = monitoredRows.filter((row) => row.riskStatus === 'Critical').length
-    const watchOrRisk = monitoredRows.filter((row) => row.riskStatus === 'Watch' || row.riskStatus === 'Risk').length
+    const watchOrRisk = monitoredRows.filter((row) => row.reviewUrgency === 'review_now' || row.reviewUrgency === 'monitor' || row.riskStatus === 'Watch' || row.riskStatus === 'Risk').length
     const liveSnapshots = monitoredRows.filter((row) => {
       if (!row.snapshotAt) return false
       const age = Date.now() - new Date(row.snapshotAt).getTime()
@@ -585,6 +617,8 @@ export default function DashboardPage() {
   const sortedRows = useMemo(() => {
     const order: Record<string, number> = { Critical: 0, Risk: 1, Watch: 2, Healthy: 3 }
     return [...clientRows].sort((a, b) => {
+      const reviewSort = reviewRank(a) - reviewRank(b)
+      if (reviewSort !== 0) return reviewSort
       const monitoringSort = (a.monitoringEnabled === false ? 1 : 0) - (b.monitoringEnabled === false ? 1 : 0)
       if (monitoringSort !== 0) return monitoringSort
       const riskSort = (order[a.riskStatus ?? ''] ?? 4) - (order[b.riskStatus ?? ''] ?? 4)
@@ -593,64 +627,19 @@ export default function DashboardPage() {
     })
   }, [clientRows])
 
-  const agencyQueue = useMemo(() => {
-    const monitoredRows = clientRows.filter((row) => row.monitoringEnabled !== false)
-    const needsReview = monitoredRows.filter((row) => ['Critical', 'Risk', 'Watch'].includes(row.riskStatus ?? ''))
-    const staleCoverage = monitoredRows.filter((row) => {
-      if (!row.snapshotAt) return true
-      const age = Date.now() - new Date(row.snapshotAt).getTime()
-      return Number.isNaN(age) || age < 0 || age > 24 * 60 * 60 * 1000
-    })
-    const thinBaseline = monitoredRows.filter((row) => typeof row.snapshotCount !== 'number' || row.snapshotCount < 10)
-    const linkReview = monitoredRows.filter((row) => row.externalLinkPresent)
+  const dailyReviewRows = useMemo(() => sortedRows.slice(0, 5), [sortedRows])
 
-    return [
-      {
-        title: 'Today focus',
-        value: String(needsReview.length),
-        detail: needsReview[0]
-          ? `${needsReview[0].profileName || needsReview[0].name} should be reviewed first.`
-          : 'No urgent risk work.',
-        action: needsReview[0] ? 'Open report' : 'View roster',
-        href: needsReview[0] ? `/clients/${needsReview[0].id}` : '/clients',
-        icon: 'alert' as IconName,
-        tone: needsReview.length ? 'text-amber-100' : 'text-emerald-200',
-      },
-      {
-        title: 'Coverage check',
-        value: String(staleCoverage.length),
-        detail: staleCoverage.length
-          ? 'Tabs need to stay open for fresh snapshots.'
-          : 'Fresh coverage.',
-        action: 'Inspect clients',
-        href: '/clients',
-        icon: 'database' as IconName,
-        tone: staleCoverage.length ? 'text-amber-100' : 'text-emerald-200',
-      },
-      {
-        title: 'Baseline maturity',
-        value: String(thinBaseline.length),
-        detail: thinBaseline.length
-          ? 'More history needed before strong trend reads.'
-          : 'Baselines are maturing.',
-        action: 'Compare reports',
-        href: '/clients',
-        icon: 'chart' as IconName,
-        tone: thinBaseline.length ? 'text-zinc-100' : 'text-emerald-200',
-      },
-      {
-        title: 'Link review',
-        value: String(linkReview.length),
-        detail: linkReview.length
-          ? 'Confirm outbound links are client-approved.'
-          : 'No link review needed.',
-        action: 'Review signals',
-        href: linkReview[0] ? `/clients/${linkReview[0].id}` : '/clients',
-        icon: 'eye' as IconName,
-        tone: linkReview.length ? 'text-amber-100' : 'text-zinc-100',
-      },
-    ]
-  }, [clientRows])
+  const assistantSummary = useMemo(() => {
+    const reviewNow = clientRows.filter((row) => row.reviewUrgency === 'review_now').length
+    const monitor = clientRows.filter((row) => row.reviewUrgency === 'monitor').length
+    const healthy = clientRows.filter((row) => row.reviewUrgency === 'healthy').length
+    const paused = clientRows.filter((row) => row.reviewUrgency === 'paused').length
+    const first = dailyReviewRows[0]
+    const lead = first
+      ? `${first.profileName || first.name}: ${first.reviewSummary || 'No unusual activity.'}`
+      : 'No clients connected yet.'
+    return { reviewNow, monitor, healthy, paused, lead }
+  }, [clientRows, dailyReviewRows])
 
   const openExtensionUnlinkedUrl = useCallback((client: ClientRow, options?: { syncOnly?: boolean }) => {
     const params = new URLSearchParams()
@@ -838,50 +827,71 @@ export default function DashboardPage() {
         <section className="mb-6">
           <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h2 className="text-lg font-medium text-zinc-100">Agency Operating Queue</h2>
-              <div className="text-sm text-zinc-500">The fastest route to what matters today.</div>
+              <h2 className="text-lg font-medium text-zinc-100">Daily Review Queue</h2>
+              <div className="text-sm text-zinc-500">Banshi points your attention before you open a report.</div>
             </div>
-            <div className="terminal-chip rounded px-3 py-2 text-sm">Snapshot-driven</div>
+            <div className="terminal-chip rounded px-3 py-2 text-sm">
+              {assistantSummary.reviewNow} review now / {assistantSummary.monitor} monitor
+            </div>
           </div>
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
-            <Link href={agencyQueue[0].href} className="terminal-panel group rounded p-5 transition hover:border-emerald-300/30">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <div className="terminal-label text-xs">{agencyQueue[0].title}</div>
-                  <div className="mt-3 flex items-end gap-3">
-                    <div className={`text-5xl font-semibold leading-none ${agencyQueue[0].tone}`}>{agencyQueue[0].value}</div>
-                    <div className="pb-1 text-sm text-zinc-500">accounts</div>
+          <div className="terminal-panel rounded p-4">
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+              <div className="border-b border-zinc-800 pb-4 xl:border-b-0 xl:border-r xl:pb-0 xl:pr-4">
+                <div className="terminal-label text-xs">assistant read</div>
+                <p className="mt-3 text-xl font-semibold leading-8 text-zinc-50">{assistantSummary.lead}</p>
+                <div className="mt-5 grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <div className="text-2xl font-semibold text-red-200">{assistantSummary.reviewNow}</div>
+                    <div className="text-xs text-zinc-500">review now</div>
+                  </div>
+                  <div>
+                    <div className="text-2xl font-semibold text-amber-100">{assistantSummary.monitor}</div>
+                    <div className="text-xs text-zinc-500">monitor</div>
+                  </div>
+                  <div>
+                    <div className="text-2xl font-semibold text-emerald-200">{assistantSummary.healthy}</div>
+                    <div className="text-xs text-zinc-500">healthy</div>
+                  </div>
+                  <div>
+                    <div className="text-2xl font-semibold text-zinc-300">{assistantSummary.paused}</div>
+                    <div className="text-xs text-zinc-500">paused</div>
                   </div>
                 </div>
-                <div className="flex h-11 w-11 items-center justify-center rounded border border-emerald-300/20 bg-black/30 text-emerald-200">
-                  <TerminalIcon name={agencyQueue[0].icon} className="h-5 w-5" />
-                </div>
               </div>
-              <p className="mt-5 text-lg font-medium text-zinc-100">{agencyQueue[0].detail}</p>
-              <div className="mt-5 inline-flex items-center gap-1 text-sm font-medium text-zinc-300 group-hover:text-emerald-200">
-                {agencyQueue[0].action}
-                <TerminalIcon name="arrowRight" className="h-4 w-4" />
-              </div>
-            </Link>
 
-            <div className="grid grid-cols-1 gap-3">
-              {agencyQueue.slice(1).map((item) => (
-                <Link key={item.title} href={item.href} className="terminal-card group flex items-center justify-between gap-4 rounded p-4 transition hover:border-emerald-300/30">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded border border-zinc-700 bg-black/30 text-zinc-300 transition group-hover:border-emerald-300/30 group-hover:text-emerald-200">
-                      <TerminalIcon name={item.icon} className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <div className="text-sm font-medium text-zinc-100">{item.title}</div>
-                        <div className={`text-sm font-semibold ${item.tone}`}>{item.value}</div>
-                      </div>
-                      <div className="mt-1 truncate text-xs text-zinc-500">{item.detail}</div>
-                    </div>
+              <div className="space-y-2">
+                {dailyReviewRows.length === 0 ? (
+                  <div className="rounded border border-dashed border-zinc-800 p-8 text-center text-sm text-zinc-500">
+                    Link a profile from the extension to start the queue.
                   </div>
-                  <TerminalIcon name="arrowRight" className="h-4 w-4 shrink-0 text-zinc-600 group-hover:text-emerald-200" />
-                </Link>
-              ))}
+                ) : dailyReviewRows.map((row) => {
+                  const findings = (row.assistantFindings ?? []).filter((finding) => finding.tone !== 'good').slice(0, 3)
+                  return (
+                    <Link key={row.id} href={`/clients/${row.id}`} className="group block rounded border border-zinc-800 bg-black/25 p-3 transition hover:border-emerald-300/30">
+                      <div className="flex items-start gap-3">
+                        <div className={`mt-2 h-2.5 w-2.5 shrink-0 rounded-full ${reviewMarkerClass(row.reviewUrgency)}`} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="truncate text-sm font-semibold text-zinc-50">{row.profileName || row.name}</div>
+                            <span className={`rounded border px-2 py-0.5 text-[11px] font-medium ${reviewClass(row.reviewUrgency)}`}>
+                              {row.reviewLabel ?? 'Healthy'}
+                            </span>
+                            {typeof row.riskScore === 'number' && <span className="text-xs text-zinc-500">score {row.riskScore}</span>}
+                          </div>
+                          <div className="mt-1 text-xs text-zinc-500">@{row.handle || row.accountId || 'unknown'}</div>
+                          <div className="mt-2 text-sm leading-6 text-zinc-300">{row.nextBestAction ?? 'No action needed today.'}</div>
+                          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500">
+                            {findings.length ? findings.map((finding) => (
+                              <span key={finding.title}>{finding.title}</span>
+                            )) : <span>No unusual activity</span>}
+                          </div>
+                        </div>
+                        <TerminalIcon name="arrowRight" className="mt-1 h-4 w-4 shrink-0 text-zinc-600 transition group-hover:text-emerald-200" />
+                      </div>
+                    </Link>
+                  )
+                })}
+              </div>
             </div>
           </div>
         </section>
@@ -890,7 +900,7 @@ export default function DashboardPage() {
           <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h2 className="text-lg font-medium text-zinc-100">Client Profiles</h2>
-              <div className="text-sm text-zinc-500">Profile health, audience movement, and snapshot-derived signals.</div>
+              <div className="text-sm text-zinc-500">Detailed roster with actions, evidence, and controls.</div>
             </div>
             <div className="terminal-chip rounded px-3 py-2 text-sm">
               Peak score {stats.highestScore}

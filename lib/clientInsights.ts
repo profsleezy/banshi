@@ -39,6 +39,16 @@ export type ClientSignal = {
   detail?: string
 }
 
+export type ReviewUrgency = 'review_now' | 'monitor' | 'healthy' | 'paused'
+
+export type AssistantFinding = {
+  title: string
+  detail: string
+  action: string
+  tone: ClientSignal['tone']
+  evidence?: string
+}
+
 export type IncidentSeverityLevel = 'clear' | 'watch' | 'risk' | 'critical'
 
 export type IncidentCategory =
@@ -90,6 +100,8 @@ export type ClientInsight = {
   profilePictureChanged?: boolean | null
   externalLinkPresent?: boolean | null
   externalLinkAdded?: boolean | null
+  externalLinkRemoved?: boolean | null
+  bioChanged?: boolean | null
   verifiedBadge?: boolean | null
   verifiedChanged?: boolean | null
   isPrivate?: boolean | null
@@ -115,6 +127,11 @@ export type ClientInsight = {
   riskHistory: RiskHistoryRow[]
   signals: ClientSignal[]
   priority: 'Routine' | 'Review' | 'Prepare' | 'Escalate'
+  reviewUrgency: ReviewUrgency
+  reviewLabel: string
+  reviewSummary: string
+  assistantFindings: AssistantFinding[]
+  nextBestAction: string
   recommendedAction: string
 }
 
@@ -307,7 +324,7 @@ function computeBanRiskReadiness(insight: Partial<ClientInsight>) {
   else if (insight.riskStatus === 'Risk') score -= 10
   else if (insight.riskStatus === 'Watch') score -= 5
 
-  if (insight.externalLinkAdded) score -= 8
+  if (insight.externalLinkAdded || insight.externalLinkRemoved) score -= 8
   else if (insight.externalLinkPresent) score -= 4
   if (insight.usernameChangeDetected || insight.handleChanged) score -= 10
 
@@ -347,7 +364,7 @@ function buildIncidentSeverities(insight: Partial<ClientInsight>): ClientInciden
   )
 
   const externalLinkScore = clamp(
-    insight.externalLinkAdded ? 65 : insight.externalLinkPresent ? 30 : 0,
+    insight.externalLinkAdded || insight.externalLinkRemoved ? 65 : insight.externalLinkPresent ? 30 : 0,
   )
 
   const scraperStaleScore = clamp(
@@ -392,8 +409,8 @@ function buildIncidentSeverities(insight: Partial<ClientInsight>): ClientInciden
       label: 'External-link risk',
       severity: severityFromScore(externalLinkScore),
       score: externalLinkScore,
-      reason: externalLinkScore ? 'External profile link is present or was recently added.' : 'No external-link risk detected.',
-      action: externalLinkScore >= 55 ? 'Open and verify destination ownership before approving the profile state.' : 'Confirm the link remains client-approved.',
+      reason: externalLinkScore ? 'External profile link is present, changed, or removed.' : 'No external-link risk detected.',
+      action: externalLinkScore >= 55 ? 'Verify the link state with the account owner before approving the profile state.' : 'Confirm the link remains client-approved.',
     },
     {
       category: 'scraper_stale',
@@ -423,6 +440,278 @@ function recommendedAction(priority: ClientInsight['priority'], insight: Partial
   return 'No immediate action. Keep monitoring and use the timeline as the account health baseline.'
 }
 
+function absPct(value?: number | null, digits = 1) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  return `${Math.abs(value).toFixed(Math.abs(value) >= 10 ? 0 : digits)}%`
+}
+
+function signedCompact(value?: number | null, suffix = '') {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  const sign = value > 0 ? '+' : ''
+  const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+  return `${sign}${compact}${suffix}`
+}
+
+function findingRank(tone: ClientSignal['tone']) {
+  if (tone === 'critical') return 0
+  if (tone === 'risk') return 1
+  if (tone === 'watch') return 2
+  if (tone === 'neutral') return 3
+  return 4
+}
+
+function addFinding(findings: AssistantFinding[], finding: AssistantFinding) {
+  if (!findings.some((item) => item.title === finding.title)) findings.push(finding)
+}
+
+function buildAssistantFindings(insight: Partial<ClientInsight>): AssistantFinding[] {
+  const findings: AssistantFinding[] = []
+  const follower7 = insight.followerPctChange7d
+  const follower30 = insight.followerPctChange30d
+  const velocity7 = insight.followerVelocity7d
+  const followingVelocity = insight.followingVelocity7d
+  const drift = insight.followRatioDriftPct
+  const snapshotCount = insight.snapshotCount ?? insight.snapshots?.length ?? 0
+
+  if (!insight.monitoringEnabled) {
+    addFinding(findings, {
+      title: 'Monitoring is paused',
+      tone: 'watch',
+      detail: 'No new snapshots will be collected until this profile is linked again.',
+      action: 'Turn monitoring back on before using this account for live incident coverage.',
+      evidence: 'Collector paused',
+    })
+  } else if (insight.staleData) {
+    const hours = typeof insight.staleHours === 'number' ? `${insight.staleHours.toFixed(1)}h` : 'unknown age'
+    addFinding(findings, {
+      title: 'Collector needs attention',
+      tone: insight.freshnessStatus === 'missing' || (insight.staleHours ?? 0) > 24 ? 'risk' : 'watch',
+      detail: `The latest snapshot is stale (${hours}). The report may miss current changes.`,
+      action: 'Open the Instagram profile tab and confirm the extension is still linked before trusting today\'s read.',
+      evidence: insight.freshnessStatus,
+    })
+  }
+
+  if (insight.riskStatus === 'Critical' || insight.riskStatus === 'Risk' || insight.riskStatus === 'Watch') {
+    addFinding(findings, {
+      title: 'Risk score elevated',
+      tone: insight.riskStatus === 'Critical' ? 'critical' : insight.riskStatus === 'Risk' ? 'risk' : 'watch',
+      detail: `Current status is ${insight.riskStatus}${typeof insight.riskScore === 'number' ? ` with score ${insight.riskScore}` : ''}.`,
+      action: 'Open the report, read the top findings, and decide whether this is expected campaign activity or an account issue.',
+      evidence: insight.riskStatus,
+    })
+  }
+
+  if (insight.usernameChangeDetected || insight.handleChanged) {
+    addFinding(findings, {
+      title: 'Handle changed',
+      tone: 'critical',
+      detail: 'The account identity moved. This is one of the clearest account-control signals.',
+      action: 'Confirm the change was intentional, verify owner access, and preserve the latest snapshot for the client trail.',
+      evidence: 'username_change_detected',
+    })
+  }
+
+  if (insight.verifiedChanged) {
+    addFinding(findings, {
+      title: 'Verification changed',
+      tone: 'critical',
+      detail: 'The verification state changed on a profile where trust signals matter.',
+      action: 'Treat this as an owner-access check: verify login access, profile settings, and recent account notices.',
+      evidence: 'verified_changed',
+    })
+  }
+
+  if (insight.bioChanged) {
+    addFinding(findings, {
+      title: 'Bio changed',
+      tone: 'watch',
+      detail: 'Profile copy changed after the account had an established baseline.',
+      action: 'Confirm the bio edit was intentional and approved before the next client check-in.',
+      evidence: 'bio_changed',
+    })
+  }
+
+  if (insight.externalLinkRemoved) {
+    addFinding(findings, {
+      title: 'Link removed',
+      tone: 'risk',
+      detail: 'The external link disappeared from the profile.',
+      action: 'Verify this was intentional. Link removals can happen during takeovers, profile cleanups, or account transitions.',
+      evidence: 'external_link_removed',
+    })
+  } else if (insight.externalLinkAdded) {
+    addFinding(findings, {
+      title: 'New external link',
+      tone: 'risk',
+      detail: 'A profile link was added or changed from the previous baseline.',
+      action: 'Open the destination and confirm it is client-approved before treating the profile as safe.',
+      evidence: 'external_link_added',
+    })
+  } else if (insight.externalLinkPresent) {
+    addFinding(findings, {
+      title: 'External link present',
+      tone: 'watch',
+      detail: 'The profile is sending traffic outside Instagram.',
+      action: 'Confirm the destination is still owned or approved by the client.',
+      evidence: 'external_link_present',
+    })
+  }
+
+  if (typeof follower7 === 'number' && follower7 <= -10) {
+    const pct = absPct(follower7)
+    addFinding(findings, {
+      title: 'Follower drop',
+      tone: follower7 <= -18 ? 'risk' : 'watch',
+      detail: `Followers dropped ${pct} over the last 7 days.`,
+      action: 'Check whether the account was restricted, whether recent content triggered churn, and whether traffic sources changed.',
+      evidence: `${follower7.toFixed(1)}% 7d`,
+    })
+  } else if (typeof follower30 === 'number' && follower30 <= -15) {
+    const pct = absPct(follower30)
+    addFinding(findings, {
+      title: 'Follower drop',
+      tone: 'watch',
+      detail: `Followers dropped ${pct} over the last 30 days.`,
+      action: 'Compare the drop against posting cadence, content removals, promos ending, and account restriction notices.',
+      evidence: `${follower30.toFixed(1)}% 30d`,
+    })
+  }
+
+  if (typeof follower7 === 'number' && follower7 >= 15) {
+    const pct = absPct(follower7)
+    addFinding(findings, {
+      title: 'Follower spike',
+      tone: follower7 >= 30 ? 'risk' : 'watch',
+      detail: `Followers increased ${pct} over the last 7 days.`,
+      action: 'Match the jump against campaigns, paid pushes, or viral posts. If none explain it, review for suspicious growth.',
+      evidence: `${follower7.toFixed(1)}% 7d`,
+    })
+  } else if (insight.shortTermSpike) {
+    addFinding(findings, {
+      title: 'Short-term spike',
+      tone: 'risk',
+      detail: 'The latest snapshot triggered a short-term audience movement signal.',
+      action: 'Compare the spike to recent campaigns or posts before assuming it is healthy growth.',
+      evidence: 'short_term_spike',
+    })
+  }
+
+  if (typeof velocity7 === 'number' && Math.abs(velocity7) >= 1000) {
+    addFinding(findings, {
+      title: 'Audience velocity moved fast',
+      tone: 'watch',
+      detail: `Follower velocity is ${signedCompact(velocity7, '/day')}.`,
+      action: 'Check whether this pace matches a real campaign. If not, keep the account in review until the next snapshot.',
+      evidence: `${velocity7.toFixed(1)}/day`,
+    })
+  }
+
+  if (typeof followingVelocity === 'number' && Math.abs(followingVelocity) >= 100) {
+    addFinding(findings, {
+      title: 'Following count moved fast',
+      tone: 'watch',
+      detail: `Following velocity is ${signedCompact(followingVelocity, '/day')}.`,
+      action: 'Confirm no aggressive follow or unfollow activity is happening from the account.',
+      evidence: `${followingVelocity.toFixed(1)}/day`,
+    })
+  }
+
+  if (typeof drift === 'number' && Math.abs(drift) >= 20) {
+    addFinding(findings, {
+      title: 'Follow ratio drift',
+      tone: 'watch',
+      detail: `Follow ratio drifted ${absPct(drift)} from the recent baseline.`,
+      action: 'Check whether the account changed its follow strategy or whether audience movement looks manipulated.',
+      evidence: `${drift.toFixed(1)}% drift`,
+    })
+  }
+
+  if (insight.profilePictureChanged) {
+    addFinding(findings, {
+      title: 'Profile image changed',
+      tone: 'watch',
+      detail: 'The visual identity moved from the previous baseline.',
+      action: 'Confirm the image change is approved and not part of an account-control issue.',
+      evidence: 'profile_picture_changed',
+    })
+  }
+
+  if (insight.isPrivateChanged) {
+    addFinding(findings, {
+      title: 'Privacy changed',
+      tone: 'risk',
+      detail: 'The account privacy setting changed.',
+      action: 'Confirm whether the client intentionally changed visibility and check whether reach or restrictions changed afterward.',
+      evidence: 'is_private_changed',
+    })
+  }
+
+  if (typeof insight.postingInactivityDays === 'number' && insight.postingInactivityDays >= 21) {
+    addFinding(findings, {
+      title: 'Posting inactivity',
+      tone: insight.postingInactivityDays >= 45 ? 'risk' : 'watch',
+      detail: `No meaningful posting movement for about ${Math.round(insight.postingInactivityDays)} days.`,
+      action: 'Confirm inactivity is planned. If not, check account access, content queue, and recent platform notices.',
+      evidence: `${Math.round(insight.postingInactivityDays)} days`,
+    })
+  }
+
+  if (typeof insight.profileStabilityScore === 'number' && insight.profileStabilityScore < 70) {
+    addFinding(findings, {
+      title: 'Profile stability dropped',
+      tone: insight.profileStabilityScore < 40 ? 'risk' : 'watch',
+      detail: `Profile stability is ${Math.round(insight.profileStabilityScore)}/100.`,
+      action: 'Review the exact profile fields that moved and confirm each change with the client or operator.',
+      evidence: `${Math.round(insight.profileStabilityScore)}/100`,
+    })
+  }
+
+  if (snapshotCount < 3 && insight.monitoringEnabled) {
+    addFinding(findings, {
+      title: 'Baseline is still thin',
+      tone: 'neutral',
+      detail: 'There are not enough snapshots to make strong trend calls yet.',
+      action: 'Keep the profile tab available and treat today\'s report as an early read, not a final verdict.',
+      evidence: `${snapshotCount} snapshots`,
+    })
+  }
+
+  if (findings.length === 0) {
+    addFinding(findings, {
+      title: 'No unusual activity',
+      tone: 'good',
+      detail: 'Current public signals are inside the available baseline.',
+      action: 'No action needed today. Keep monitoring so the account history keeps improving.',
+      evidence: 'stable',
+    })
+  }
+
+  return findings.sort((a, b) => findingRank(a.tone) - findingRank(b.tone))
+}
+
+function deriveReviewUrgency(insight: Partial<ClientInsight>, findings: AssistantFinding[]): ReviewUrgency {
+  if (!insight.monitoringEnabled) return 'paused'
+  if (findings.some((finding) => finding.tone === 'critical' || finding.tone === 'risk')) return 'review_now'
+  if (insight.priority === 'Escalate' || insight.priority === 'Prepare') return 'review_now'
+  if (findings.some((finding) => finding.tone === 'watch') || insight.priority === 'Review') return 'monitor'
+  return 'healthy'
+}
+
+function reviewLabel(urgency: ReviewUrgency) {
+  if (urgency === 'review_now') return 'Review now'
+  if (urgency === 'monitor') return 'Monitor'
+  if (urgency === 'paused') return 'Paused'
+  return 'Healthy'
+}
+
+function reviewSummary(urgency: ReviewUrgency, findings: AssistantFinding[]) {
+  if (urgency === 'paused') return 'Monitoring is paused.'
+  const visible = findings.filter((finding) => finding.tone !== 'good').slice(0, 3)
+  if (urgency === 'healthy' || visible.length === 0) return 'No unusual activity.'
+  return visible.map((finding) => finding.title.toLowerCase()).join(' + ')
+}
+
 function buildSignals(insight: Partial<ClientInsight>) {
   const signals: ClientSignal[] = []
 
@@ -434,7 +723,9 @@ function buildSignals(insight: Partial<ClientInsight>) {
 
   if (insight.shortTermSpike) signals.push({ label: 'Short-term follower spike', tone: 'risk' })
   if (insight.usernameChangeDetected || insight.handleChanged) signals.push({ label: 'Handle movement', tone: 'critical' })
+  if (insight.bioChanged) signals.push({ label: 'Bio changed', tone: 'watch' })
   if (insight.profilePictureChanged) signals.push({ label: 'Profile image changed', tone: 'watch' })
+  if (insight.externalLinkRemoved) signals.push({ label: 'External link removed', tone: 'risk' })
   if (insight.externalLinkAdded) signals.push({ label: 'External link added', tone: 'risk' })
   else if (insight.externalLinkPresent) signals.push({ label: 'External link present', tone: 'watch' })
   if (insight.verifiedChanged) signals.push({ label: 'Verification changed', tone: 'critical' })
@@ -528,6 +819,8 @@ export function buildClientInsight(input: {
     profilePictureChanged: typeof derived.profile_picture_changed === 'boolean' ? derived.profile_picture_changed : null,
     externalLinkPresent: boolFromSources(sources, 'external_link_present'),
     externalLinkAdded: typeof derived.external_link_added === 'boolean' ? derived.external_link_added : null,
+    externalLinkRemoved: typeof derived.external_link_removed === 'boolean' ? derived.external_link_removed : boolFromSources(sources, 'external_link_removed'),
+    bioChanged: typeof derived.bio_changed === 'boolean' ? derived.bio_changed : boolFromSources(sources, 'bio_changed'),
     verifiedBadge: boolFromSources(sources, 'verified_badge'),
     verifiedChanged: typeof derived.verified_changed === 'boolean' ? derived.verified_changed : null,
     isPrivate: boolFromSources(sources, 'is_private'),
@@ -537,6 +830,12 @@ export function buildClientInsight(input: {
   const signals = buildSignals(insightSeed)
   const readiness = computeBanRiskReadiness(insightSeed)
   const incidentSeverities = buildIncidentSeverities(insightSeed)
+  const assistantFindings = buildAssistantFindings({ ...insightSeed, priority, monitoringEnabled })
+  const reviewUrgencyValue = deriveReviewUrgency({ ...insightSeed, priority, monitoringEnabled }, assistantFindings)
+  const primaryFinding = !monitoringEnabled
+    ? assistantFindings.find((finding) => finding.title === 'Monitoring is paused') ?? assistantFindings[0]
+    : assistantFindings[0]
+  const nextBestAction = primaryFinding?.action ?? recommendedAction(priority, { ...insightSeed, monitoringEnabled })
 
   return {
     id: client.id,
@@ -571,6 +870,8 @@ export function buildClientInsight(input: {
     profilePictureChanged: insightSeed.profilePictureChanged,
     externalLinkPresent: insightSeed.externalLinkPresent,
     externalLinkAdded: insightSeed.externalLinkAdded,
+    externalLinkRemoved: insightSeed.externalLinkRemoved,
+    bioChanged: insightSeed.bioChanged,
     verifiedBadge: insightSeed.verifiedBadge,
     verifiedChanged: insightSeed.verifiedChanged,
     isPrivate: insightSeed.isPrivate,
@@ -596,7 +897,12 @@ export function buildClientInsight(input: {
     riskHistory: input.riskHistory ?? [],
     signals,
     priority,
-    recommendedAction: recommendedAction(priority, { ...insightSeed, monitoringEnabled }),
+    reviewUrgency: reviewUrgencyValue,
+    reviewLabel: reviewLabel(reviewUrgencyValue),
+    reviewSummary: reviewSummary(reviewUrgencyValue, assistantFindings),
+    assistantFindings,
+    nextBestAction,
+    recommendedAction: nextBestAction,
   }
 }
 

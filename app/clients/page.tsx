@@ -53,13 +53,6 @@ function timeAgo(value?: string | null) {
   return `${Math.floor(hours / 24)}d ago`
 }
 
-function priorityClass(priority: ClientInsight['priority']) {
-  if (priority === 'Escalate') return 'border-red-500/40 bg-red-500/10 text-red-200'
-  if (priority === 'Prepare') return 'border-orange-500/40 bg-orange-500/10 text-orange-200'
-  if (priority === 'Review') return 'border-amber-500/40 bg-amber-500/10 text-amber-100'
-  return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
-}
-
 function statusClass(status?: string | null) {
   if (status === 'Critical') return 'border-red-500/40 bg-red-500/10 text-red-200'
   if (status === 'Risk') return 'border-orange-500/40 bg-orange-500/10 text-orange-200'
@@ -74,6 +67,19 @@ function signalClass(tone: string) {
   if (tone === 'watch') return 'border-amber-500/40 bg-amber-500/10 text-amber-100'
   if (tone === 'good') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
   return 'border-zinc-700 bg-zinc-950 text-zinc-300'
+}
+
+function reviewClass(urgency: ClientInsight['reviewUrgency']) {
+  if (urgency === 'review_now') return 'border-red-500/40 bg-red-500/10 text-red-200'
+  if (urgency === 'monitor' || urgency === 'paused') return 'border-amber-500/40 bg-amber-500/10 text-amber-100'
+  return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+}
+
+function reviewRank(insight: ClientInsight) {
+  if (insight.reviewUrgency === 'review_now') return 0
+  if (insight.reviewUrgency === 'monitor') return 1
+  if (insight.reviewUrgency === 'paused') return 2
+  return 3
 }
 
 function StatCard({ label, value, caption, tone = 'neutral', icon }: { label: string; value: string | number; caption: string; tone?: 'neutral' | 'good' | 'watch' | 'risk'; icon: IconName }) {
@@ -132,6 +138,7 @@ function MiniSparkline({ insight }: { insight: ClientInsight }) {
 
 function ClientCard({ insight }: { insight: ClientInsight }) {
   const topSignals = insight.signals.slice(0, 4)
+  const topFindings = insight.assistantFindings.filter((finding) => finding.tone !== 'good').slice(0, 3)
 
   return (
     <article className={`terminal-card terminal-boot rounded p-5 ${insight.monitoringEnabled ? '' : 'border-amber-500/30'}`}>
@@ -143,6 +150,9 @@ function ClientCard({ insight }: { insight: ClientInsight }) {
                 <h2 className="truncate text-xl font-semibold text-zinc-50">{insight.displayName}</h2>
                 <span className={`rounded border px-2.5 py-1 text-xs font-medium ${statusClass(insight.riskStatus)}`}>
                   {insight.riskStatus ?? 'No score'}{typeof insight.riskScore === 'number' ? ` ${insight.riskScore}` : ''}
+                </span>
+                <span className={`rounded border px-2.5 py-1 text-xs font-medium ${reviewClass(insight.reviewUrgency)}`}>
+                  {insight.reviewLabel}
                 </span>
                 <span className={`rounded border px-2.5 py-1 text-xs font-medium ${insight.monitoringEnabled ? signalClass('good') : signalClass('watch')}`}>
                   {insight.monitoringEnabled ? 'Monitoring' : 'Paused'}
@@ -189,12 +199,22 @@ function ClientCard({ insight }: { insight: ClientInsight }) {
         <div className="rounded border border-zinc-800 bg-black/30 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-xs uppercase tracking-wide text-zinc-500">Agency queue</div>
-              <div className="mt-1 text-sm font-medium text-zinc-100">Recommended next move</div>
+              <div className="text-xs uppercase tracking-wide text-zinc-500">Today</div>
+              <div className="mt-1 text-sm font-medium text-zinc-100">{insight.reviewSummary}</div>
             </div>
-            <span className={`rounded border px-2.5 py-1 text-xs font-medium ${priorityClass(insight.priority)}`}>{insight.priority}</span>
+            <span className={`rounded border px-2.5 py-1 text-xs font-medium ${reviewClass(insight.reviewUrgency)}`}>{insight.reviewLabel}</span>
           </div>
-          <p className="mt-3 text-sm leading-6 text-zinc-400">{insight.recommendedAction}</p>
+          <p className="mt-3 text-sm leading-6 text-zinc-300">{insight.nextBestAction}</p>
+          {topFindings.length > 0 && (
+            <div className="mt-4 space-y-2">
+              {topFindings.map((finding) => (
+                <div key={finding.title} className="border-l border-zinc-700 pl-3">
+                  <div className="text-xs font-medium text-zinc-200">{finding.title}</div>
+                  <div className="mt-0.5 text-xs leading-5 text-zinc-500">{finding.detail}</div>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="mt-4 flex flex-wrap gap-2">
             {topSignals.map((signal) => (
               <span key={signal.label} className={`rounded border px-2.5 py-1 text-xs font-medium ${signalClass(signal.tone)}`}>{signal.label}</span>
@@ -312,7 +332,7 @@ export default function ClientsPage() {
     const total = insights.length
     const monitored = insights.filter((insight) => insight.monitoringEnabled).length
     const paused = total - monitored
-    const attention = insights.filter((insight) => insight.priority === 'Escalate' || insight.priority === 'Prepare' || insight.priority === 'Review').length
+    const attention = insights.filter((insight) => insight.reviewUrgency === 'review_now' || insight.reviewUrgency === 'monitor').length
     const live = insights.filter((insight) => {
       if (!insight.snapshotAt) return false
       const age = Date.now() - new Date(insight.snapshotAt).getTime()
@@ -324,20 +344,18 @@ export default function ClientsPage() {
 
   const filteredInsights = useMemo(() => {
     const term = query.trim().toLowerCase()
-    const priorityOrder: Record<ClientInsight['priority'], number> = { Escalate: 0, Prepare: 1, Review: 2, Routine: 3 }
-
     return insights
       .filter((insight) => {
         if (filter === 'monitoring' && !insight.monitoringEnabled) return false
         if (filter === 'paused' && insight.monitoringEnabled) return false
-        if (filter === 'attention' && insight.priority === 'Routine') return false
+        if (filter === 'attention' && insight.reviewUrgency !== 'review_now' && insight.reviewUrgency !== 'monitor') return false
         if (!term) return true
         return [insight.displayName, insight.handle, insight.accountId, insight.platform]
           .filter(Boolean)
           .some((value) => String(value).toLowerCase().includes(term))
       })
       .sort((a, b) => {
-        const prioritySort = priorityOrder[a.priority] - priorityOrder[b.priority]
+        const prioritySort = reviewRank(a) - reviewRank(b)
         if (prioritySort !== 0) return prioritySort
         const monitoringSort = (a.monitoringEnabled === false ? 1 : 0) - (b.monitoringEnabled === false ? 1 : 0)
         if (monitoringSort !== 0) return monitoringSort
